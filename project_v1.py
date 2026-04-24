@@ -120,72 +120,6 @@ def reset_connections():
     edge_list.clear()
        
 
-def keyboardListener(key, x, y):
-    global state_id, selected_state, transition_mode, transition_src, current_question, result_text,camera_z, score
-
-    # create state  
-    if key == b'c':
-        a=random.uniform(-200,200)
-        b=random.uniform(-200,200)
-        #c=random.uniform(200,300)
-        states[state_id] = {
-            "pos": [a,b,200],
-            "is_start": False,
-            "is_accept": False
-        }
-        selected_state = state_id
-        state_id += 1
-
-    # select state
-    if key == b'k' and len(states) > 0: # channged to kfrom n
-        keys = list(states.keys())
-
-        if selected_state not in keys:
-            selected_state = keys[0]
-        else:
-            i = keys.index(selected_state)
-            selected_state = keys[(i+1) % len(keys)]
-
-    if selected_state is not None:
-        if selected_state not in states:
-            return
-        pos = states[selected_state]["pos"]
-        #  WASD movement and Q/E for up/down
-        if key == b'w': pos[1] += 10
-        if key == b's': pos[1] -= 10
-        if key == b'a': pos[0] -= 10
-        if key == b'd': pos[0] += 10
-        if key == b'q': pos[2] += 10
-        if key == b'e': pos[2] -= 10
-
-        # start
-        if key == b'f':
-            for s in states:
-                states[s]["is_start"] = False
-            states[selected_state]["is_start"] = True
-            print(f"Start state = q{selected_state}")
-            ##only one start state allowed and we can change the start state by selecting another state and pressing 'f' again
-        # ACCEPT
-        if key == b'g':
-            states[selected_state]["is_accept"] = not states[selected_state]["is_accept"]
-            print(f"Accept state = q{selected_state}")
-    # transition mode
-    if key == b't':
-        transition_mode = True
-        transition_src = selected_state
-    
-    #undo last transition
-    if key == b'x':
-         # remove last edge
-        if edge_list:
-            last=edge_list.pop()
-            del transitions[(last[0], last[2])] # remove from transition dict
-            print("Last transition removed")
-        transition_mode = False
-        transition_src = None
-        print(transitions)
-
-
     # label transition with 0 or 1
     if transition_mode:
         if key ==b'0' or key == b'1':
@@ -301,29 +235,6 @@ def draw_floor():
 
             glEnd()
 
-def draw_states():
-    for s in states:
-     
-        x=states[s]["pos"][0]
-        y=states[s]["pos"][1]
-        z=states[s]["pos"][2]
-
-        glPushMatrix()
-        glTranslatef(x,y,z)
-
-        if s ==selected_state:
-            glColor3f(1,0,0) #red 
-        elif states[s]["is_start"]:
-            glColor3f(0,0,1) #blue 
-        elif states[s]["is_accept"]:
-            glColor3f(1,1,0) #yellow 
-        else:
-            glColor3f(0,1,0) #green 
-
-
-        gluSphere(gluNewQuadric(),30,20,20)
-
-        glPopMatrix()
 
 def draw_edges():
     h = 760
@@ -356,7 +267,7 @@ def showScreen():
     setupCamera()
 
     draw_floor()
-    draw_states()
+    #draw_states()
     draw_edges()
 
     # UI
@@ -396,7 +307,7 @@ def main():
     glEnable(GL_DEPTH_TEST)
 
     glutDisplayFunc(showScreen)
-    glutKeyboardFunc(keyboardListener)
+   # glutKeyboardFunc(keyboardListener)
     glutSpecialFunc(specialKeyListener)
    # glutMouseFunc(mouseListener)
     glutIdleFunc(idle)
