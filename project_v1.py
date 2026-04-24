@@ -174,16 +174,7 @@ def keyboardListener(key, x, y):
         transition_mode = True
         transition_src = selected_state
     
-    #undo last transition
-    if key == b'x':
-         # remove last edge
-        if edge_list:
-            last=edge_list.pop()
-            del transitions[(last[0], last[2])] # remove from transition dict
-            print("Last transition removed")
-        transition_mode = False
-        transition_src = None
-        print(transitions)
+    
 
 
     # label transition with 0 or 1
