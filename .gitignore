@@ -1,0 +1,6 @@
+OpenGL/
+__pycache__/
+*.pyc
+*.pdf
+*.docx
+venv/
