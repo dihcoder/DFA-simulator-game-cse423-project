@@ -1,1047 +1,901 @@
-from OpenGL.GL import *
-from OpenGL.GLU import *
-from OpenGL.GLUT import *
-import math
 import random
-import time
-import sys
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+from math import cos, radians, sin, sqrt, pi
 
-# ==========================================
-# PLANET GUARDIAN 3D - ULTIMATE BOSS & LASER EDITION
-# ==========================================
+# ==============================================
+#  GAME SCREEN FSM:  INTRO -> MENU -> PLAYING
+# ==============================================
+SCREEN      = "INTRO"
+intro_timer = 0.0
+INTRO_DUR   = 3.5
 
-WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 800
+menu_hover   = 0
+MENU_OPTIONS = ["START GAME", "HOW TO PLAY", "QUIT"]
+show_how_to  = False
 
-game_state = "MENU"
-current_level = 1
-score = 0
-high_score = 0
-coins = 0
-camera_mode = "FREE"
-combo_multiplier = 1.0
-combo_timer = 0.0
-shake_timer = 0.0
-level_unlocked = 1
+WIN_W, WIN_H = 1000, 800
 
-camera_theta = 45.0
-camera_phi = 45.0
-camera_dist = 600.0
+# ==============================================
+#  DFA CORE STATE
+# ==============================================
+states      = {}
+transitions = {}
+edge_list   = []
 
-planet_hp = 100
-shield_hp = 0
-planet_radius = 40
-player_angle = 0.0
-orbit_radius = 160
+selected_state = None
+state_id       = 0
 
-bullets = []
-boss_bullets = []
-turret_bullets = []
-meteors = []
-aliens = []
-powerups = []
-stars = []
-particles = []
+camera_x = 45
+camera_y = 35
+camera_z = 350
 
-boss_active = False
-boss_hp = 4000
-boss_max_hp = 4000
-boss_obj = None
-boss_warning_timer = 0.0
+current_question = 0
+score        = 0
+result_text  = ""
 
-last_time = 0
-time_warp = False
-spawn_timer = 0
-turret_cooldown = 0
-turret_rotation = 0.0
+# animation
+time_val         = 0.0
+particle_list    = []
+pulse_states     = {}
+flash_edges      = []
+travel_particles = []
+# transition
+transition_mode = False
+transition_src  = None
+transition_dst  = None
+# flow tape
+flow_string = ""
+flow_index  = 0
+flow_timer  = 0.0
+# decorative intro nodes
+_stars        = None
+_intro_nodes  = None
 
-laser_timer = 0.0
-laser_fire_cooldown = 0.0
-homing_timer = 0.0
+# ==============================================
+#  QUESTIONS
+# ==============================================
+questions = [
+    {"rule": "Strings ending with 01",
+     "alphabet": ["0","1"],
+     "test_strings": ["01","101","1101","10","111"],
+     "expected": {"01":True,"101":True,"1101":True,"10":False,"111":False}},
+    {"rule": "Strings containing 00",
+     "alphabet": ["0","1"],
+     "test_strings": ["00","100","001","11","101"],
+     "expected": {"00":True,"100":True,"001":True,"11":False,"101":False}},
+    {"rule": "Strings of even length",
+     "alphabet": ["0","1"],
+     "test_strings": ["","01","1001","0","100","11"],
+     "expected": {"":True,"01":True,"1001":True,"0":False,"100":False,"11":True}},
+    {"rule": "Strings starting with 1",
+     "alphabet": ["0","1"],
+     "test_strings": ["1","10","110","01","001"],
+     "expected": {"1":True,"10":True,"110":True,"01":False,"001":False}},
+    {"rule": "Odd number of 1s",
+     "alphabet": ["0","1"],
+     "test_strings": ["1","11","111","0","010"],
+     "expected": {"1":True,"11":False,"111":True,"0":False,"010":False}},
+]
 
-# Level configs
-levels = {
-    1: {"name": "MARS",    "color": (1.0, 0.3, 0.1), "p_rad": 40, "base_spawn": 2.5, "enemy_spd": 40},
-    2: {"name": "EARTH",   "color": (0.1, 0.5, 1.0), "p_rad": 50, "base_spawn": 2.0, "enemy_spd": 60},
-    3: {"name": "JUPITER", "color": (1.0, 0.6, 0.2), "p_rad": 70, "base_spawn": 1.5, "enemy_spd": 70},
-}
+# ==============================================
+#  RULE / VALIDATION HELPERS
+# ==============================================
+def check_rule(rule, s):
+    if rule == "Strings ending with 01":   return s.endswith("01")
+    if rule == "Strings containing 00":    return "00" in s
+    if rule == "Strings of even length":   return len(s) % 2 == 0
+    if rule == "Strings starting with 1":  return s.startswith("1")
+    if rule == "Odd number of 1s":         return s.count("1") % 2 == 1
+    return False
 
-def init_lighting():
-    glEnable(GL_DEPTH_TEST)
-    glEnable(GL_LIGHTING)
-    glEnable(GL_LIGHT0)
-    glEnable(GL_COLOR_MATERIAL)
-    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE)
-    glEnable(GL_BLEND)
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glLightfv(GL_LIGHT0, GL_POSITION, [200.0, 200.0, 500.0, 1.0])
+def generate_strings(alphabet, max_len=4):
+    res = [""]
+    for _ in range(max_len):
+        new_s = [s+c for s in res for c in alphabet]
+        res += new_s
+    return list(set(res))
 
-def generate_stars():
-    global stars
-    stars = [
-        (random.uniform(-1500, 1500), random.uniform(-1500, 1500), random.uniform(-1500, 1500))
-        for _ in range(500)
-    ]
+def validate_against_rule(rule, alphabet):
+    for s in generate_strings(alphabet, 4):
+        ok, _ = simulate_dfa(s)
+        if ok != check_rule(rule, s):
+            return False
+    return True
 
-def draw_stars():
-    glDisable(GL_LIGHTING)
-    glBegin(GL_POINTS)
-    for s in stars:
-        dist = math.sqrt(s[0]**2 + s[1]**2 + s[2]**2)
-        b = max(0.2, 1.0 - (dist / 2000.0))
-        glColor3f(b, b, b)
-        glVertex3f(s[0], s[1], s[2])
-    glEnd()
-    glEnable(GL_LIGHTING)
+def is_complete_dfa(alphabet=None):
+    if alphabet is None: alphabet = ["0","1"]
+    for s in states:
+        for ch in alphabet:
+            if (s, ch) not in transitions:
+                return False
+    return True
 
-def draw_orbit(radius, r, g, b):
-    glDisable(GL_LIGHTING)
-    glColor3f(r, g, b)
-    glBegin(GL_LINE_LOOP)
-    for i in range(360):
-        theta = math.radians(i)
-        glVertex3f(radius * math.cos(theta), radius * math.sin(theta), 0)
-    glEnd()
-    glEnable(GL_LIGHTING)
+# ==============================================
+#  DFA CORE
+# ==============================================
+def find_start():
+    for s in states:
+        if states[s]["is_start"]: return s
+    return None
 
-def draw_text(x, y, text, r=1, g=1, b=1):
-    glDisable(GL_LIGHTING)
-    glColor3f(r, g, b)
-    glMatrixMode(GL_PROJECTION)
-    glPushMatrix()
-    glLoadIdentity()
-    gluOrtho2D(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
-    glMatrixMode(GL_MODELVIEW)
-    glPushMatrix()
-    glLoadIdentity()
-    glRasterPos2f(x, y)
-    for char in text:
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
-    glPopMatrix()
-    glMatrixMode(GL_PROJECTION)
-    glPopMatrix()
-    glMatrixMode(GL_MODELVIEW)
-    glEnable(GL_LIGHTING)
+def find_accept():
+    return {s for s in states if states[s]["is_accept"]}
 
-def draw_3d_text(x, y, text, r=1, g=1, b=1):
-    glDisable(GL_LIGHTING)
-    glColor3f(r, g, b)
-    glRasterPos3f(x, y, 15)
-    for char in text:
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
-    glEnable(GL_LIGHTING)
+def simulate_dfa(string):
+    start = find_start()
+    if start is None: return False, []
+    cur = start; path = [cur]
+    for ch in string:
+        if (cur, ch) not in transitions: return False, path
+        cur = transitions[(cur, ch)]; path.append(cur)
+    return cur in find_accept(), path
 
-def draw_sphere(radius, r, g, b, alpha=1.0):
-    glColor4f(r, g, b, alpha)
-    glutSolidSphere(radius, 25, 25)
+def reset_connections():
+    for s in states:
+        states[s]["is_start"] = False
+        states[s]["is_accept"] = False
+    transitions.clear(); edge_list.clear(); flash_edges.clear()
 
-def draw_cube(size, r, g, b):
-    glColor3f(r, g, b)
-    glutSolidCube(size)
-
-def draw_defense_drone():
-    glPushMatrix()
-    glScalef(1.0, 0.5, 1.5)
-    draw_cube(10, 0.6, 0.6, 0.6)
-    glPopMatrix()
-    glPushMatrix()
-    glScalef(3.0, 0.1, 0.8)
-    draw_cube(8, 0.1, 0.3, 0.9)
-    glPopMatrix()
-    glPushMatrix()
-    glTranslatef(0, 0, 7)
-    draw_sphere(3, 0.0, 1.0, 1.0)
-    glPopMatrix()
-
-def draw_bomb(size):
-    draw_sphere(size * 0.8, 0.15, 0.15, 0.15)
-    glPushMatrix()
-    glTranslatef(0, size * 0.7, 0)
-    draw_cube(size * 0.4, 0.6, 0.6, 0.6)
-    glPopMatrix()
-    if int(time.time() * 8) % 2 == 0:
-        glDisable(GL_LIGHTING)
-        glPushMatrix()
-        glTranslatef(0, size * 0.95, 0)
-        draw_sphere(size * 0.25, 1.0, 0.0, 0.0)
-        glPopMatrix()
-        glEnable(GL_LIGHTING)
-
-def draw_crystal(size, r, g, b):
-    glPushMatrix()
-    glDisable(GL_LIGHTING)
-    glScalef(size * 0.6, size * 0.6, size)
-    glColor4f(r, g, b, 1.0)
-    glutSolidOctahedron()
-    glEnable(GL_LIGHTING)
-    glPopMatrix()
-
-def draw_realistic_meteor(size, seed_val):
-    prng = random.Random(seed_val)
-    glColor3f(0.35, 0.25, 0.15)
-    glutSolidSphere(size * 0.7, 15, 15)
-    for _ in range(5):
-        cx, cy, cz = prng.uniform(-1, 1), prng.uniform(-1, 1), prng.uniform(-1, 1)
-        mag = math.sqrt(cx**2 + cy**2 + cz**2)
-        if mag == 0:
-            continue
-        glPushMatrix()
-        glTranslatef(cx/mag*(size*0.4), cy/mag*(size*0.4), cz/mag*(size*0.4))
-        draw_sphere(size * 0.4, 0.25, 0.15, 0.05)
-        glPopMatrix()
-    glow = size * (1.1 + 0.05 * math.sin(time.time() * 15))
-    glPushMatrix()
-    draw_sphere(glow, 1.0, 0.4, 0.0, 0.4)
-    glPopMatrix()
-
-def draw_realistic_planet(radius, r, g, b, level):
-    glPushMatrix()
-    glRotatef(time.time() * 10, 0, 0, 1)  # Planet self-rotation
-
-    if level == 1:  # MARS
-        # Base reddish-brown surface
-        draw_sphere(radius, 0.75, 0.25, 0.1)
-
-        # Surface craters & highland patches
-        prng = random.Random(12)
-        for _ in range(14):
-            cx, cy, cz = prng.uniform(-1, 1), prng.uniform(-1, 1), prng.uniform(-1, 1)
-            mag = math.sqrt(cx**2 + cy**2 + cz**2)
-            if mag == 0:
-                continue
-            glPushMatrix()
-            glTranslatef(cx/mag*(radius*0.96), cy/mag*(radius*0.96), cz/mag*(radius*0.96))
-            glScalef(1.6, 1.6, 0.18)
-            draw_sphere(radius * 0.22, 0.45, 0.12, 0.04)
-            glPopMatrix()
-
-        # North Polar Ice Cap
-        glPushMatrix()
-        glTranslatef(0, 0, radius * 0.85)
-        glScalef(1.0, 1.0, 0.08)
-        draw_sphere(radius * 0.38, 0.95, 0.93, 0.90)
-        glPopMatrix()
-
-        # South Polar Ice Cap
-        glPushMatrix()
-        glTranslatef(0, 0, -radius * 0.85)
-        glScalef(1.0, 1.0, 0.08)
-        draw_sphere(radius * 0.28, 0.92, 0.90, 0.88)
-        glPopMatrix()
-
-        # Thin reddish atmosphere haze
-        glDisable(GL_LIGHTING)
-        draw_sphere(radius * 1.06, 0.85, 0.35, 0.15, 0.12)
-        glEnable(GL_LIGHTING)
-
-        # Valles Marineris — dark canyon strip
-        glPushMatrix()
-        glRotatef(20, 0, 1, 0)
-        glTranslatef(radius * 0.95, 0, 0)
-        glScalef(0.08, 1.2, 0.25)
-        draw_sphere(radius * 0.55, 0.28, 0.08, 0.02)
-        glPopMatrix()
-
-    elif level == 2:  # EARTH
-        # Deep blue ocean base
-        draw_sphere(radius, 0.08, 0.38, 0.78)
-
-        # Small green and white hills
-        prng = random.Random(42)
-        continent_colors = [
-            (0.22, 0.72, 0.22),
-            (0.55, 0.65, 0.25),
-            (0.28, 0.60, 0.18),
-        ]
-        for i in range(15): # Slightly more of them since they are smaller now
-            cx, cy, cz = prng.uniform(-1, 1), prng.uniform(-1, 1), prng.uniform(-1, 1)
-            mag = math.sqrt(cx**2 + cy**2 + cz**2)
-            if mag == 0:
-                continue
-            glPushMatrix()
-            glTranslatef(cx/mag*(radius*0.95), cy/mag*(radius*0.95), cz/mag*(radius*0.95))
-            glScalef(1.2, 1.2, 0.4) # Made less flat to look like round hills
-            col = continent_colors[i % len(continent_colors)]
-            
-            # Smaller green base
-            draw_sphere(radius * 0.18, *col) 
-            
-            # Small white peak on the hill
-            glTranslatef(0, 0, radius * 0.05)
-            draw_sphere(radius * 0.10, 0.95, 0.95, 0.95)
-            glPopMatrix()
-
-        # Arctic Ice Cap (North)
-        glPushMatrix()
-        glTranslatef(0, 0, radius * 0.88)
-        glScalef(1.0, 1.0, 0.10)
-        draw_sphere(radius * 0.32, 0.95, 0.97, 1.0)
-        glPopMatrix()
-
-        # Antarctic Ice Cap (South)
-        glPushMatrix()
-        glTranslatef(0, 0, -radius * 0.88)
-        glScalef(1.0, 1.0, 0.12)
-        draw_sphere(radius * 0.42, 0.97, 0.97, 1.0)
-        glPopMatrix()
-
-        # Cloud layer — semi-transparent white sphere
-        glDisable(GL_LIGHTING)
-        draw_sphere(radius * 1.04, 1.0, 1.0, 1.0, 0.15)
-        glEnable(GL_LIGHTING)
-
-        # Blue atmosphere glow
-        glDisable(GL_LIGHTING)
-        draw_sphere(radius * 1.09, 0.3, 0.6, 1.0, 0.08)
-        glEnable(GL_LIGHTING)
-
-    elif level == 3:  # JUPITER
-        glPushMatrix()
-        glScalef(1.05, 1.05, 0.85)
-        draw_sphere(radius, 0.8, 0.6, 0.4)
-        glColor3f(0.6, 0.3, 0.1)
-        glPushMatrix()
-        glTranslatef(0, 0, radius * 0.3)
-        glutSolidTorus(radius * 0.1, radius * 0.9, 15, 30)
-        glPopMatrix()
-        glColor3f(0.7, 0.4, 0.2)
-        glPushMatrix()
-        glTranslatef(0, 0, -radius * 0.2)
-        glutSolidTorus(radius * 0.15, radius * 0.85, 15, 30)
-        glPopMatrix()
-        glPopMatrix()
-
-        # Saturn-like rings
-        glPushMatrix()
-        glRotatef(30, 1, 1, 0)
-        glColor4f(0.8, 0.7, 0.5, 0.7)
-        glutSolidTorus(2, radius + 25, 20, 50)
-        glColor4f(0.6, 0.4, 0.2, 0.4)
-        glutSolidTorus(4, radius + 35, 20, 50)
-        glPopMatrix()
-
-    glPopMatrix()  # End planet rotation
-
-    if level == 2:
-        moon_angle = time.time() * 40
-        mx = (radius + 45) * math.cos(math.radians(moon_angle))
-        my = (radius + 45) * math.sin(math.radians(moon_angle))
-        glPushMatrix()
-        glTranslatef(mx, my, 5)
-        draw_sphere(7, 0.85, 0.85, 0.85)
-        # Moon surface craters
-        glPushMatrix()
-        glTranslatef(3, 2, 2)
-        draw_sphere(2.2, 0.65, 0.65, 0.65)
-        glPopMatrix()
-        glPushMatrix()
-        glTranslatef(-4, -1, -1)
-        draw_sphere(1.8, 0.70, 0.70, 0.70)
-        glPopMatrix()
-        glPopMatrix()
-
-def draw_fighter_jet():
-    glPushMatrix()
-    glScalef(1.8, 0.4, 0.4)
-    draw_sphere(8, 0.7, 0.7, 0.8)
-    glPopMatrix()
-    glPushMatrix()
-    glTranslatef(-2, 0, 0)
-    glRotatef(35, 0, 0, 1)
-    glScalef(0.8, 2.5, 0.1)
-    draw_cube(10, 0.3, 0.3, 0.4)
-    glPopMatrix()
-    glPushMatrix()
-    glTranslatef(-2, 0, 0)
-    glRotatef(-35, 0, 0, 1)
-    glScalef(0.8, 2.5, 0.1)
-    draw_cube(10, 0.3, 0.3, 0.4)
-    glPopMatrix()
-    glPushMatrix()
-    glTranslatef(3, 0, 3)
-    draw_sphere(3, 0.1, 0.8, 1.0, 0.7)
-    glPopMatrix()
-
-def draw_alien_ship():
-    glPushMatrix()
-    glScalef(1.0, 1.0, 0.3)
-    draw_sphere(15, 0.5, 0.1, 0.6)
-    glPopMatrix()
-    glPushMatrix()
-    glTranslatef(0, 0, 4)
-    draw_sphere(6, 0.1, 0.9, 0.1)
-    glPopMatrix()
-
-def draw_boss_spaceship():
-    glPushMatrix()
-    glScalef(3.0, 3.0, 0.5)
-    draw_sphere(20, 0.2, 0.2, 0.25)
-    glPopMatrix()
-
-    glPushMatrix()
-    glDisable(GL_LIGHTING)
-    draw_sphere(12, 1.0, 0.1, 0.1)
-    glEnable(GL_LIGHTING)
-    glPopMatrix()
-
-    glPushMatrix()
-    glRotatef(time.time() * 50, 0, 0, 1)
-    glColor3f(0.5, 0.5, 0.6)
-    glutSolidTorus(3, 65, 20, 50)
-    for i in range(4):
-        ang = i * 90
-        x, y = 65 * math.cos(math.radians(ang)), 65 * math.sin(math.radians(ang))
-        glPushMatrix()
-        glTranslatef(x, y, 0)
-        glDisable(GL_LIGHTING)
-        draw_sphere(5, 0.0, 1.0, 1.0)
-        glEnable(GL_LIGHTING)
-        glPopMatrix()
-    glPopMatrix()
-
-def create_explosion(x, y):
-    for _ in range(10):
-        particles.append({
-            'x': x, 'y': y,
-            'vx': random.uniform(-50, 50),
-            'vy': random.uniform(-50, 50),
-            'life': 0.5,
+# ==============================================
+#  PARTICLES
+# ==============================================
+def spawn_particles(x, y, z, count, color, speed=5.0, lifetime=1.2):
+    for _ in range(count):
+        angle = random.uniform(0, 2*pi)
+        elev  = random.uniform(-pi/3, pi/3)
+        spd   = random.uniform(speed*0.5, speed*1.5)
+        particle_list.append({
+            "x":x,"y":y,"z":z,
+            "vx":spd*cos(elev)*cos(angle),
+            "vy":spd*cos(elev)*sin(angle),
+            "vz":spd*sin(elev),
+            "r":color[0],"g":color[1],"b":color[2],
+            "life":lifetime,"max_life":lifetime,
         })
 
-def start_game(level):
-    global game_state, current_level, score, coins, planet_hp, shield_hp, planet_radius
-    global bullets, turret_bullets, boss_bullets, meteors, aliens, powerups, particles
-    global player_angle, boss_active, boss_hp, boss_obj, laser_timer, laser_fire_cooldown
-    global homing_timer, combo_multiplier, boss_warning_timer
-
-    current_level = level
-    score, planet_hp, shield_hp = 0, 100, 0
-    planet_radius = levels[level]["p_rad"]
-    player_angle = 0.0
-    combo_multiplier = 1.0
-    bullets, turret_bullets, boss_bullets = [], [], []
-    meteors, aliens, powerups, particles = [], [], [], []
-    boss_active, boss_hp, boss_obj, boss_warning_timer = False, boss_max_hp, None, 0.0
-    laser_timer, laser_fire_cooldown, homing_timer = 0.0, 0.0, 0.0
-    generate_stars()
-    game_state = "PLAYING"
-
-def apply_damage_to_planet(amt):
-    global shield_hp, planet_hp, game_state, shake_timer, combo_multiplier
-    shake_timer = 0.5
-    combo_multiplier = 1.0
-    if shield_hp > 0:
-        shield_hp -= amt
-        if shield_hp < 0:
-            planet_hp += shield_hp
-            shield_hp = 0
-    else:
-        planet_hp -= amt
-    if planet_hp <= 0:
-        planet_hp = 0
-        game_state = "GAMEOVER"
-
-def spawn_enemies():
-    global spawn_timer, boss_active, boss_obj, boss_hp, boss_warning_timer
-
-    if current_level == 3 and score >= 100 and not boss_active and boss_hp > 0:
-        boss_active = True
-        boss_warning_timer = 3.0
-        boss_obj = {'x': 0, 'y': 1000, 'speed': 40, 'ang': 90, 'fire_timer': 1.5}
-        return
-
-    if spawn_timer <= 0:
-        angle = random.uniform(0, 360)
-        x, y = 900 * math.cos(math.radians(angle)), 900 * math.sin(math.radians(angle))
-        speed = levels[current_level]["enemy_spd"]
-        choice = random.random()
-        is_giant = (current_level == 3)
-
-        if choice < 0.40:
-            size_mod = random.uniform(1.2, 1.8) if is_giant else random.uniform(0.7, 1.5)
-            meteors.append({'x': x, 'y': y, 'speed': speed / size_mod,
-                            'hp': 100 * size_mod, 'size': 14 * size_mod})
-        elif choice < 0.70:
-            scale = random.uniform(1.5, 2.5) if is_giant else 1.0
-            aliens.append({'x': x, 'y': y, 'speed': speed + 20, 'scale': scale})
-        else:
-            powerups.append({
-                'x': x, 'y': y, 'speed': speed - 15,
-                'type': random.choice(["TRAP", "SHIELD", "SHIELD", "LASER", "HOMING", "HP", "HP"]),
-            })
-
-        spawn_timer = max(0.5, levels[current_level]["base_spawn"] - (score * 0.003))
-
-def update():
-    global last_time, spawn_timer, game_state, score, coins, high_score, level_unlocked
-    global turret_cooldown, turret_rotation, laser_timer, laser_fire_cooldown, homing_timer
-    global combo_multiplier, combo_timer, shake_timer, boss_warning_timer, boss_active, boss_hp
-    global planet_hp, shield_hp
-
-    current_time = time.time()
-    dt = current_time - last_time
-    last_time = current_time
-    if game_state != "PLAYING":
-        return
-
-    if score >= 300:
-        if current_level < 3:
-            level_unlocked = max(level_unlocked, current_level + 1)
-            start_game(current_level + 1)
-            return
-        elif boss_active and boss_hp <= 0:
-            game_state = "WIN"
-            return
-
-    if shake_timer > 0: shake_timer -= dt
-    if boss_warning_timer > 0: boss_warning_timer -= dt
-
-    if combo_timer > 0:
-        combo_timer -= dt
-    else:
-        combo_multiplier = 1.0
-
-    enemy_dt = dt * 0.3 if time_warp else dt
-    spawn_timer -= dt
-    turret_rotation += dt * 45
-
-    if laser_timer > 0:
-        laser_timer -= dt
-        laser_fire_cooldown -= dt
-        if laser_fire_cooldown <= 0:
-            px = orbit_radius * math.cos(math.radians(player_angle))
-            py = orbit_radius * math.sin(math.radians(player_angle))
-            bullets.append({'x': px, 'y': py, 'angle': player_angle, 'is_laser': True})
-            laser_fire_cooldown = 0.05
-
-    if homing_timer > 0: homing_timer -= dt
-
-    spawn_enemies()
-
-    # ---- Boss movement & shooting ----
-    if boss_active and boss_obj:
-        dist = math.sqrt(boss_obj['x']**2 + boss_obj['y']**2)
-        if dist > 300:
-            boss_obj['x'] -= (boss_obj['x'] / dist) * boss_obj['speed'] * enemy_dt
-            boss_obj['y'] -= (boss_obj['y'] / dist) * boss_obj['speed'] * enemy_dt
-        else:
-            boss_obj['ang'] += dt * 25
-            boss_obj['x'] = 300 * math.cos(math.radians(boss_obj['ang']))
-            boss_obj['y'] = 300 * math.sin(math.radians(boss_obj['ang']))
-
-            boss_obj['fire_timer'] -= enemy_dt
-            if boss_obj['fire_timer'] <= 0:
-                px = orbit_radius * math.cos(math.radians(player_angle))
-                py = orbit_radius * math.sin(math.radians(player_angle))
-                shoot_angle = math.degrees(math.atan2(py - boss_obj['y'], px - boss_obj['x']))
-                boss_bullets.append({'x': boss_obj['x'], 'y': boss_obj['y'], 'angle': shoot_angle})
-                boss_obj['fire_timer'] = 1.5
-
-    px = orbit_radius * math.cos(math.radians(player_angle))
-    py = orbit_radius * math.sin(math.radians(player_angle))
-
-    # ---- Boss bullets ----
-    for b in boss_bullets[:]:
-        rad = math.radians(b['angle'])
-        b['x'] += math.cos(rad) * 350 * dt
-        b['y'] += math.sin(rad) * 350 * dt
-
-        if abs(b['x']) > 1500 or abs(b['y']) > 1500:
-            boss_bullets.remove(b)
-            continue
-
-        if math.sqrt((b['x'] - px)**2 + (b['y'] - py)**2) < 20:
-            apply_damage_to_planet(25)
-            create_explosion(px, py)
-            boss_bullets.remove(b)
-            continue
-
-        if math.sqrt(b['x']**2 + b['y']**2) < planet_radius + 15:
-            apply_damage_to_planet(20)
-            create_explosion(b['x'], b['y'])
-            boss_bullets.remove(b)
-
-    # ---- Turret auto-fire ----
-    turret_cooldown -= dt
-    if turret_cooldown <= 0:
-        tr = planet_radius + 35
-        for i in range(3):
-            angle = turret_rotation + (i * 120)
-            tx = tr * math.cos(math.radians(angle))
-            ty = tr * math.sin(math.radians(angle))
-            target, min_dist = None, 600
-
-            enemies = meteors + aliens
-            if boss_active and boss_obj:
-                enemies.append(boss_obj)
-
-            for e in enemies:
-                d = math.sqrt((e['x'] - tx)**2 + (e['y'] - ty)**2)
-                if d < min_dist:
-                    min_dist, target = d, e
-
-            if target:
-                shoot_angle = math.degrees(math.atan2(target['y'] - ty, target['x'] - tx))
-                turret_bullets.append({'x': tx, 'y': ty, 'angle': shoot_angle})
-
-        turret_cooldown = max(1.5, 3.5 - (coins * 0.02))
-
-    # ---- Particles ----
-    for p in particles[:]:
-        p['x'] += p['vx'] * dt
-        p['y'] += p['vy'] * dt
-        p['life'] -= dt
-        if p['life'] <= 0:
-            particles.remove(p)
-
-    def add_score(pts):
-        global score, coins, combo_multiplier, combo_timer, high_score, level_unlocked
-        score += int(pts * combo_multiplier)
-        coins += 5
-        combo_multiplier = min(5.0, combo_multiplier + 0.1)
-        combo_timer = 3.0
-        if score > high_score:
-            high_score = score
-        if current_level == 1 and score >= 50:
-            level_unlocked = max(level_unlocked, 2)
-        if current_level == 2 and score >= 100:
-            level_unlocked = max(level_unlocked, 3)
-
-    # ---- Player bullets movement ----
-    for b in bullets[:]:
-        if homing_timer > 0 and not b.get('is_laser', False):
-            closest, min_d = None, 800
-            targets = aliens + meteors
-            if boss_active and boss_obj:
-                targets.append(boss_obj)
-            for e in targets:
-                d = math.sqrt((e['x'] - b['x'])**2 + (e['y'] - b['y'])**2)
-                if d < min_d:
-                    min_d, closest = d, e
-            if closest:
-                b['angle'] = math.degrees(math.atan2(closest['y'] - b['y'], closest['x'] - b['x']))
-
-        rad = math.radians(b['angle'])
-        spd = 1200 if b.get('is_laser', False) else 750
-        b['x'] += math.cos(rad) * spd * dt
-        b['y'] += math.sin(rad) * spd * dt
-        if abs(b['x']) > 1500 or abs(b['y']) > 1500:
-            if b in bullets:
-                bullets.remove(b)
-
-    # ---- Turret bullets movement ----
-    for b in turret_bullets[:]:
-        rad = math.radians(b['angle'])
-        b['x'] += math.cos(rad) * 500 * dt
-        b['y'] += math.sin(rad) * 500 * dt
-        if abs(b['x']) > 1200 or abs(b['y']) > 1200:
-            if b in turret_bullets:
-                turret_bullets.remove(b)
-
-    # ---- Meteors movement ----
-    for m in meteors[:]:
-        dist = math.sqrt(m['x']**2 + m['y']**2)
-        if dist == 0:
-            continue
-        m['x'] -= (m['x'] / dist) * m['speed'] * enemy_dt
-        m['y'] -= (m['y'] / dist) * m['speed'] * enemy_dt
-        if dist < planet_radius + 10:
-            apply_damage_to_planet(15)
-            create_explosion(m['x'], m['y'])
-            if m in meteors:
-                meteors.remove(m)
-
-    # ---- Aliens movement ----
-    for a in aliens[:]:
-        dx, dy = px - a['x'], py - a['y']
-        dist = math.sqrt(dx**2 + dy**2)
-        if dist > 0:
-            a['x'] += (dx / dist) * a['speed'] * enemy_dt
-            a['y'] += (dy / dist) * a['speed'] * enemy_dt
-
-        scale = a.get('scale', 1.0)
-        if dist < 30 * scale:
-            apply_damage_to_planet(20)
-            create_explosion(a['x'], a['y'])
-            if a in aliens:
-                aliens.remove(a)
-
-    # ---- Power-ups movement ----
-    for p in powerups[:]:
-        dist = math.sqrt(p['x']**2 + p['y']**2)
-        if dist == 0:
-            continue
-        p['x'] -= (p['x'] / dist) * p['speed'] * enemy_dt
-        p['y'] -= (p['y'] / dist) * p['speed'] * enemy_dt
-
-        if math.sqrt((p['x'] - px)**2 + (p['y'] - py)**2) < 35:
-            if p['type'] == "TRAP":
-                game_state = "GAMEOVER"
-            elif p['type'] == "SHIELD":
-                shield_hp = 100
-            elif p['type'] == "LASER":
-                laser_timer = 10.0
-            elif p['type'] == "HOMING":
-                homing_timer = 10.0
-            elif p['type'] == "HP":
-                planet_hp = min(100, planet_hp + 30)
-            if p in powerups:
-                powerups.remove(p)
-        elif dist < planet_radius:
-            if p in powerups:
-                powerups.remove(p)
-
-    # ---- Player bullet collision ----
-    for b in bullets[:]:
-        if b not in bullets:
-            continue
-        hit = False
-        is_laser = b.get('is_laser', False)
-        p_dmg = 15 if is_laser else (80 if current_level == 3 else 40)
-
-        # Boss hit
-        if boss_active and boss_obj:
-            if math.sqrt((b['x'] - boss_obj['x'])**2 + (b['y'] - boss_obj['y'])**2) < 60:
-                boss_hp -= p_dmg
-                create_explosion(b['x'], b['y'])
-                if b in bullets:
-                    bullets.remove(b)
-                if boss_hp <= 0:
-                    add_score(500)
-                continue
-
-        # Alien hit
-        for a in aliens[:]:
-            scale = a.get('scale', 1.0)
-            if math.sqrt((b['x'] - a['x'])**2 + (b['y'] - a['y'])**2) < 30 * scale:
-                create_explosion(a['x'], a['y'])
-                if a in aliens:
-                    aliens.remove(a)
-                hit = True
-                add_score(20)
-                break
-        if hit:
-            if b in bullets:
-                bullets.remove(b)
-            continue
-
-        # Meteor hit
-        for m in meteors[:]:
-            if math.sqrt((b['x'] - m['x'])**2 + (b['y'] - m['y'])**2) < m['size'] + 10:
-                m['hp'] -= (20 if is_laser else 40)
-                if m['hp'] <= 0:
-                    create_explosion(m['x'], m['y'])
-                    if m in meteors:
-                        meteors.remove(m)
-                    add_score(15)
-                hit = True
-                break
-        if hit:
-            if b in bullets:
-                bullets.remove(b)
-            continue
-
-    # ---- Turret bullet collision ----
-    for b in turret_bullets[:]:
-        if b not in turret_bullets:
-            continue
-        hit = False
-
-        # Boss hit
-        if boss_active and boss_obj:
-            if math.sqrt((b['x'] - boss_obj['x'])**2 + (b['y'] - boss_obj['y'])**2) < 60:
-                boss_hp -= 5
-                hit = True
-                if b in turret_bullets:
-                    turret_bullets.remove(b)
-                continue
-
-        # Meteor / alien hit
-        for e in meteors + (aliens if current_level == 3 else []):
-            rad = e.get('size', 25 * e.get('scale', 1.0))
-            if math.sqrt((b['x'] - e['x'])**2 + (b['y'] - e['y'])**2) < rad:
-                if 'hp' in e:
-                    e['hp'] -= 25
-                    if e['hp'] <= 0:
-                        create_explosion(e['x'], e['y'])
-                        if e in meteors:
-                            meteors.remove(e)
-                        add_score(5)
-                else:
-                    create_explosion(e['x'], e['y'])
-                    if e in aliens:
-                        aliens.remove(e)
-                    add_score(10)
-                hit = True
-                break
-        if hit:
-            if b in turret_bullets:
-                turret_bullets.remove(b)
-
-    glutPostRedisplay()
-
-def display():
-    if boss_warning_timer > 0 and int(time.time() * 5) % 2 == 0:
-        glClearColor(0.4, 0.0, 0.0, 1.0)
-    else:
-        bg = levels[current_level]["color"] if game_state == "PLAYING" else (0.1, 0.1, 0.2)
-        glClearColor(bg[0] * 0.1, bg[1] * 0.1, bg[2] * 0.1, 1.0)
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-    if game_state == "MENU":
-        draw_text(350, 600, "PLANET GUARDIAN 3D", 0, 1, 1)
-        draw_text(400, 500, f"HIGH SCORE: {high_score}", 1, 1, 0)
-        draw_text(350, 400, f"1. MARS {'[UNLOCKED]' if level_unlocked >= 1 else ''}")
-        draw_text(350, 360, f"2. EARTH {'[UNLOCKED]' if level_unlocked >= 2 else '[LOCKED - Need 50 Score]'}")
-        draw_text(350, 320, f"3. JUPITER {'[UNLOCKED]' if level_unlocked >= 3 else '[LOCKED - Need 100 Score]'}")
-        draw_text(250, 200, "ESC to Menu | A/D (Move) | Mouse L (Shoot) | C (Cam) | T (Time Warp)", 0.6, 0.6, 0.6)
-
-    elif game_state == "GAMEOVER":
-        draw_text(400, 450, "GAME OVER", 1, 0, 0)
-        draw_text(420, 400, f"Final Score: {score}")
-        draw_text(380, 350, "Press M to Return to Main Menu", 1, 1, 1)
-
-    elif game_state == "WIN":
-        draw_text(340, 450, "MOTHERSHIP DESTROYED! YOU WIN!", 0, 1, 0)
-        draw_text(420, 400, f"Final Score: {score}")
-        draw_text(380, 350, "Press M to Return to Main Menu", 1, 1, 1)
-
-    elif game_state == "PLAYING":
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        gluPerspective(65, WINDOW_WIDTH / WINDOW_HEIGHT, 1, 3000)
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
-
-        px = orbit_radius * math.cos(math.radians(player_angle))
-        py = orbit_radius * math.sin(math.radians(player_angle))
-        sx = random.uniform(-4, 4) * shake_timer
-        sy = random.uniform(-4, 4) * shake_timer
-
-        if camera_mode == "FREE":
-            cx = camera_dist * math.cos(math.radians(camera_phi)) * math.cos(math.radians(camera_theta))
-            cy = camera_dist * math.cos(math.radians(camera_phi)) * math.sin(math.radians(camera_theta))
-            cz = camera_dist * math.sin(math.radians(camera_phi))
-            gluLookAt(cx + sx, cy + sy, cz,  0, 0, 0,  0, 0, 1)
-        elif camera_mode == "FOLLOW":
-            cam_dist = orbit_radius * 0.4
-            cx = cam_dist * math.cos(math.radians(player_angle)) + sx
-            cy = cam_dist * math.sin(math.radians(player_angle)) + sy
-            look_x = (orbit_radius * 3) * math.cos(math.radians(player_angle))
-            look_y = (orbit_radius * 3) * math.sin(math.radians(player_angle))
-            gluLookAt(cx, cy, 60,  look_x, look_y, 0,  0, 0, 1)
-        elif camera_mode == "FPP":
-            ex = (orbit_radius + 5) * math.cos(math.radians(player_angle))
-            ey = (orbit_radius + 5) * math.sin(math.radians(player_angle))
-            lx = ex + math.cos(math.radians(player_angle)) * 200
-            ly = ey + math.sin(math.radians(player_angle)) * 200
-            gluLookAt(ex + sx, ey + sy, 10,  lx, ly, 10,  0, 0, 1)
-
-        draw_stars()
-        draw_realistic_planet(planet_radius, *levels[current_level]["color"], current_level)
-
-        if shield_hp > 0:
-            draw_sphere(planet_radius + 8, 0, 0.6, 1.0, 0.4)
-        draw_orbit(orbit_radius, 0.4, 0.4, 0.4)
-        draw_orbit(planet_radius + 35, 0.2, 0.5, 0.2)
-
-        # Turret drones
-        for i in range(3):
-            ang = turret_rotation + (i * 120)
-            tx = (planet_radius + 35) * math.cos(math.radians(ang))
-            ty = (planet_radius + 35) * math.sin(math.radians(ang))
-            glPushMatrix()
-            glTranslatef(tx, ty, 0)
-            glRotatef(ang, 0, 0, 1)
-            draw_defense_drone()
-            glPopMatrix()
-
-        # Player ship
-        if camera_mode != "FPP":
-            glPushMatrix()
-            glTranslatef(px, py, 0)
-            glRotatef(player_angle, 0, 0, 1)
-            draw_fighter_jet()
-            glPopMatrix()
-
-        # Boss
-        if boss_active and boss_obj:
-            glPushMatrix()
-            glTranslatef(boss_obj['x'], boss_obj['y'], 0)
-            b_ang = math.degrees(math.atan2(py - boss_obj['y'], px - boss_obj['x']))
-            glRotatef(b_ang, 0, 0, 1)
-            draw_boss_spaceship()
-            glPopMatrix()
-
-        # Meteors
-        for m in meteors:
-            glPushMatrix()
-            glTranslatef(m['x'], m['y'], 0)
-            glRotatef(m['x'] + m['y'], 1, 1, 0)
-            draw_realistic_meteor(m['size'], int(m['x'] + m['y']))
-            glPopMatrix()
-
-        # Aliens
-        for a in aliens:
-            glPushMatrix()
-            glTranslatef(a['x'], a['y'], 0)
-            glRotatef(math.degrees(math.atan2(py - a['y'], px - a['x'])), 0, 0, 1)
-            scale = a.get('scale', 1.0)
-            glScalef(scale, scale, scale)
-            draw_alien_ship()
-            glPopMatrix()
-
-        # Power-ups
-        for p in powerups:
-            glPushMatrix()
-            glTranslatef(p['x'], p['y'], 0)
-            if p['type'] == "TRAP":
-                glRotatef(time.time() * 50, 1, 1, 1)
-                draw_bomb(14)
-                draw_3d_text(-10, 20, "TRAP", 1, 0, 0)
-            else:
-                glRotatef(turret_rotation * 10, 0, 0, 1)
-                glRotatef(45, 1, 0, 0)
-                if p['type'] == "SHIELD":
-                    draw_crystal(15, 0.0, 0.8, 1.0)
-                    draw_3d_text(-15, 20, "SHIELD", 0, 0.8, 1)
-                elif p['type'] == "LASER":
-                    draw_crystal(15, 1.0, 0.0, 1.0)
-                    draw_3d_text(-15, 20, "LASER", 1, 0, 1)
-                elif p['type'] == "HOMING":
-                    draw_crystal(15, 0.0, 1.0, 1.0)
-                    draw_3d_text(-15, 20, "HOMING", 0, 1, 1)
-                elif p['type'] == "HP":
-                    draw_crystal(15, 0.2, 1.0, 0.2)
-                    draw_3d_text(-10, 20, "HP", 0, 1, 0)
-            glPopMatrix()
-
-        # Player bullets
-        for b in bullets:
-            glPushMatrix()
-            glTranslatef(b['x'], b['y'], 0)
-            glDisable(GL_LIGHTING)
-            if b.get('is_laser', False):
-                glRotatef(b['angle'], 0, 0, 1)
-                glScalef(3.0, 0.4, 0.4)
-                draw_sphere(5, 1.0, 0.0, 1.0)
-            elif homing_timer > 0:
-                draw_sphere(6, 0, 1, 1)
-            else:
-                draw_sphere(4, 1, 1, 0)
-            glEnable(GL_LIGHTING)
-            glPopMatrix()
-
-        # Boss bullets
-        for b in boss_bullets:
-            glPushMatrix()
-            glTranslatef(b['x'], b['y'], 0)
-            glDisable(GL_LIGHTING)
-            draw_sphere(6, 1.0, 0.2, 0.0)
-            glEnable(GL_LIGHTING)
-            glPopMatrix()
-
-        # Turret bullets
-        for b in turret_bullets:
-            glPushMatrix()
-            glTranslatef(b['x'], b['y'], 0)
-            glDisable(GL_LIGHTING)
-            draw_sphere(3, 0, 1, 1)
-            glEnable(GL_LIGHTING)
-            glPopMatrix()
-
-        # Particles
-        glDisable(GL_LIGHTING)
-        glBegin(GL_POINTS)
-        for p in particles:
-            glColor4f(1, 0.5, 0, p['life'] * 2)
-            glVertex3f(p['x'], p['y'], 0)
+def update_particles(dt):
+    dead = [p for p in particle_list if p["life"]<=0]
+    for p in dead: particle_list.remove(p)
+    for p in particle_list:
+        p["x"]+=p["vx"]*dt; p["y"]+=p["vy"]*dt; p["z"]+=p["vz"]*dt
+        p["vz"]-=9.8*dt; p["life"]-=dt
+
+def draw_particles():
+    glDisable(GL_DEPTH_TEST)
+    glPointSize(6)
+    glBegin(GL_POINTS)
+    for p in particle_list:
+        a = max(0, p["life"]/p["max_life"])
+        glColor3f(p["r"]*a, p["g"]*a, p["b"]*a)
+        glVertex3f(p["x"], p["y"], p["z"])
+    glEnd()
+    glEnable(GL_DEPTH_TEST)
+
+# ==============================================
+#  TRAVEL PARTICLES
+# ==============================================
+def spawn_travel_particle(path, color=(1,1,1), speed=0.6):
+    for i in range(len(path)-1):
+        travel_particles.append({"src":path[i],"dst":path[i+1],
+                                  "t":0.0,"speed":speed,"color":color})
+
+def update_travel_particles(dt):
+    for p in travel_particles: p["t"] += dt*p["speed"]
+    travel_particles[:] = [p for p in travel_particles if p["t"]<=1.0]
+
+def draw_travel_particles():
+    glPointSize(10)
+    glBegin(GL_POINTS)
+    for p in travel_particles:
+        if p["src"] not in states or p["dst"] not in states: continue
+        x1,y1,z1=states[p["src"]]["pos"]; x2,y2,z2=states[p["dst"]]["pos"]
+        t=p["t"]
+        glColor3f(*p["color"])
+        glVertex3f(x1+(x2-x1)*t, y1+(y2-y1)*t, z1+(z2-z1)*t)
+    glEnd()
+
+# ==============================================
+#  FLOW TAPE
+# ==============================================
+def update_flow(dt):
+    global flow_timer, flow_index
+    flow_timer += dt
+    if flow_timer > 0.45:
+        flow_timer = 0
+        flow_index = min(flow_index+1, len(flow_string))
+
+def draw_input_flow():
+    if not flow_string: return
+    visible = flow_string[:flow_index]
+    draw_text(400, 750, "INPUT: " + visible, color=(1,1,0))
+
+# ==============================================
+#  STAR FIELD
+# ==============================================
+def get_stars():
+    global _stars
+    if _stars is None:
+        _stars = [(random.uniform(-800,800),
+                   random.uniform(-800,800),
+                   random.uniform(-100,600),
+                   random.uniform(0.3,1.0)) for _ in range(200)]
+    return _stars
+
+def draw_stars():
+    glPointSize(2)
+    glBegin(GL_POINTS)
+    for sx,sy,sz,b in get_stars():
+        tw=(sin(time_val*2.3+sx*0.01)+1)*0.3
+        glColor3f(b*(0.5+tw),b*(0.6+tw),b*(0.9+tw*0.5))
+        glVertex3f(sx,sy,sz)
+    glEnd()
+
+def draw_floor():
+    glLineWidth(1)
+    for i in range(-200,201,20):
+        t=(sin(time_val*0.4+i*0.05)+1)*0.5
+        bri=0.08+0.06*t
+        glColor3f(bri*0.4,bri*0.8,bri)
+        glBegin(GL_LINES); glVertex3f(i,-200,0); glVertex3f(i,200,0); glEnd()
+        glBegin(GL_LINES); glVertex3f(-200,i,0); glVertex3f(200,i,0); glEnd()
+    glLineWidth(2)
+    for i in range(64):
+        a0=2*pi*i/64; a1=2*pi*(i+1)/64
+        p=(sin(time_val*1.2+a0*2)+1)*0.5
+        glColor3f(0.0,0.3+0.2*p,0.5+0.3*p)
+        glBegin(GL_LINES)
+        glVertex3f(220*cos(a0),220*sin(a0),0)
+        glVertex3f(220*cos(a1),220*sin(a1),0)
         glEnd()
-        glEnable(GL_LIGHTING)
 
-        # HUD
-        draw_text(10, 760, f"SCORE: {score}/300  |  COINS: {coins}", 1, 1, 0)
-        if combo_multiplier > 1.0:
-            draw_text(10, 730, f"COMBO: {combo_multiplier:.1f}x", 1, 0.5, 0)
+def draw_axes():
+    glLineWidth(2)
+    a=(sin(time_val*0.5)+1)*0.2+0.3
+    glBegin(GL_LINES)
+    glColor3f(a,0.2*a,0.2*a); glVertex3f(0,0,0); glVertex3f(60,0,0)
+    glColor3f(0.2*a,a,0.2*a); glVertex3f(0,0,0); glVertex3f(0,60,0)
+    glColor3f(0.2*a,0.5*a,a); glVertex3f(0,0,0); glVertex3f(0,0,60)
+    glEnd()
 
-        hp_c = (1, 0, 0) if planet_hp < 25 and int(time.time() * 5) % 2 == 0 else (0, 1, 0)
-        draw_text(10, 700 if combo_multiplier > 1.0 else 730, f"PLANET HP: {planet_hp}%", *hp_c)
-        if shield_hp > 0:
-            draw_text(10, 670, f"SHIELD: {shield_hp}%", 0, 0.5, 1)
+# ==============================================
+#  TEXT / 2-D HELPERS
+# ==============================================
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,1)):
+    glColor3f(*color)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glRasterPos2f(x,y)
+    for ch in text:
+        glutBitmapCharacter(font,ord(ch))
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
 
-        if boss_active:
-            draw_text(400, 760, f"BOSS HP: {boss_hp}/{boss_max_hp}", 1, 0, 0)
+def text_width(text, font=GLUT_BITMAP_HELVETICA_18):
+    return sum(glutBitmapWidth(font,ord(c)) for c in text)
 
-        buffs = []
-        if laser_timer > 0:  buffs.append(f"LASER ({int(laser_timer)}s)")
-        if homing_timer > 0: buffs.append(f"HOMING ({int(homing_timer)}s)")
-        if buffs:
-            draw_text(400, 730 if boss_active else 760, " + ".join(buffs), 1, 0, 1)
-        if time_warp:
-            draw_text(400, 700 if boss_active else 730, "TIME WARP", 0, 1, 1)
+def draw_text_centered(cy, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,1)):
+    w = text_width(text, font)
+    draw_text(WIN_W//2 - w//2, cy, text, font, color)
+
+def draw_rect_2d(x,y,w,h,color):
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glColor3f(*color)
+    glBegin(GL_QUADS)
+    glVertex2f(x,y); glVertex2f(x+w,y); glVertex2f(x+w,y+h); glVertex2f(x,y+h)
+    glEnd()
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
+
+def draw_rect_outline_2d(x,y,w,h,color,lw=2):
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glColor3f(*color); glLineWidth(lw)
+    glBegin(GL_LINE_LOOP)
+    glVertex2f(x,y); glVertex2f(x+w,y); glVertex2f(x+w,y+h); glVertex2f(x,y+h)
+    glEnd()
+    glLineWidth(1)
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
+
+# ==============================================
+#  INTRO FLOATING NODES
+# ==============================================
+def get_intro_nodes():
+    global _intro_nodes
+    if _intro_nodes is None:
+        _intro_nodes = []
+        for i in range(9):
+            _intro_nodes.append({
+                "x":random.uniform(80,920),"y":random.uniform(100,700),
+                "vx":random.uniform(-20,20),"vy":random.uniform(-15,15),
+                "r":random.uniform(16,28),"phase":random.uniform(0,2*pi),
+                "col":random.choice([
+                    (0.2,0.5,1.0),(0.1,0.9,0.5),(1.0,0.9,0.0),(0.85,0.3,0.85)
+                ])
+            })
+    return _intro_nodes
+
+def update_intro_nodes(dt):
+    for n in get_intro_nodes():
+        n["x"]+=n["vx"]*dt; n["y"]+=n["vy"]*dt
+        if n["x"]<n["r"] or n["x"]>WIN_W-n["r"]: n["vx"]*=-1
+        if n["y"]<n["r"] or n["y"]>WIN_H-n["r"]: n["vy"]*=-1
+
+def draw_intro_nodes():
+    nodes=get_intro_nodes()
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+
+    for i in range(len(nodes)):
+        for j in range(i+1,len(nodes)):
+            ni,nj=nodes[i],nodes[j]
+            dist=sqrt((ni["x"]-nj["x"])**2+(ni["y"]-nj["y"])**2)
+            if dist<220:
+                alp=(1-dist/220)*0.35
+                glLineWidth(1); glColor3f(0.2*alp,0.6*alp,alp)
+                glBegin(GL_LINES)
+                glVertex2f(ni["x"],ni["y"]); glVertex2f(nj["x"],nj["y"])
+                glEnd()
+
+    for n in nodes:
+        pulse=(sin(time_val*2+n["phase"])+1)*0.5
+        r=n["r"]+4*pulse
+        cr,cg,cb=n["col"]
+        glColor3f(cr*0.25,cg*0.25,cb*0.25)
+        glBegin(GL_TRIANGLE_FAN); glVertex2f(n["x"],n["y"])
+        for k in range(25): a=2*pi*k/24; glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
+        glEnd()
+        glColor3f(cr,cg,cb); glLineWidth(2)
+        glBegin(GL_LINE_LOOP)
+        for k in range(24): a=2*pi*k/24; glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
+        glEnd()
+
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
+
+# ==============================================
+#  INTRO SCREEN
+# ==============================================
+TITLE1 = "3D  DFA  SIMULATOR"
+TITLE2 = "Build . Test . Master Finite Automata"
+
+def draw_intro_screen():
+    draw_rect_2d(0,0,WIN_W,WIN_H,(0.02,0.02,0.06))
+    draw_intro_nodes()
+    # scanline
+    sy=int((time_val*60)%WIN_H)
+    draw_rect_2d(0,sy,WIN_W,2,(0.06,0.18,0.28))
+
+    fade=min(1.0,intro_timer/1.5)
+    pulse=(sin(time_val*1.8)+1)*0.5
+    r=0.4+0.4*pulse; g=0.7+0.2*pulse
+
+    draw_text_centered(500,TITLE1,
+                       font=GLUT_BITMAP_TIMES_ROMAN_24,
+                       color=(r*fade,g*fade,fade))
+    fade2=max(0,min(1.0,(intro_timer-1.0)/1.0))
+    draw_text_centered(458,TITLE2,
+                       font=GLUT_BITMAP_HELVETICA_18,
+                       color=(0.55*fade2,0.78*fade2,0.88*fade2))
+
+    if intro_timer > INTRO_DUR-0.6:
+        blink=(sin(time_val*3)+1)*0.5
+        draw_text_centered(395,"Press any key to continue ...",
+                           font=GLUT_BITMAP_HELVETICA_18,
+                           color=(0.55*blink,0.88*blink,1.0*blink))
+
+# ==============================================
+#  MENU SCREEN
+# ==============================================
+def _menu_item_rect(i):
+    item_h=52; gap=14
+    total=(len(MENU_OPTIONS)*item_h+(len(MENU_OPTIONS)-1)*gap)
+    base_y=WIN_H//2-total//2-20
+    w=320; x=WIN_W//2-w//2
+    y=base_y+(len(MENU_OPTIONS)-1-i)*(item_h+gap)
+    return x,y,w,item_h
+
+def draw_menu_screen():
+    draw_rect_2d(0,0,WIN_W,WIN_H,(0.02,0.02,0.06))
+    draw_intro_nodes()
+    sy=int((time_val*60)%WIN_H)
+    draw_rect_2d(0,sy,WIN_W,2,(0.04,0.12,0.22))
+
+    pulse=(sin(time_val*1.8)+1)*0.5
+    draw_text_centered(706,TITLE1,font=GLUT_BITMAP_TIMES_ROMAN_24,
+                       color=(0.4+0.3*pulse,0.7+0.2*pulse,1.0))
+    draw_text_centered(668,TITLE2,font=GLUT_BITMAP_HELVETICA_18,
+                       color=(0.5,0.75,0.85))
+    draw_rect_2d(WIN_W//2-170,646,340,2,(0.2,0.45,0.75))
+
+    for i,label in enumerate(MENU_OPTIONS):
+        x,y,w,h=_menu_item_rect(i)
+        hov=(i==menu_hover)
+        if hov:
+            hp=(sin(time_val*4)+1)*0.5
+            bg=(0.08+0.08*hp,0.18+0.08*hp,0.32+0.08*hp)
+        else:
+            bg=(0.05,0.08,0.14)
+        draw_rect_2d(x,y,w,h,bg)
+        if hov:
+            bp=(sin(time_val*5)+1)*0.5
+            bc=(0.3+0.4*bp,0.6+0.2*bp,1.0); lw=2
+        else:
+            bc=(0.18,0.32,0.52); lw=1
+        draw_rect_outline_2d(x,y,w,h,bc,lw)
+
+        if hov:            tc=(1.0,0.95,0.45)
+        elif label=="QUIT":tc=(1.0,0.4,0.35)
+        else:              tc=(0.8,0.9,1.0)
+        tw=text_width(label,GLUT_BITMAP_HELVETICA_18)
+        draw_text(x+w//2-tw//2,y+h//2-8,label,
+                  font=GLUT_BITMAP_HELVETICA_18,color=tc)
+
+    draw_text_centered(28,"Mouse click or UP/DOWN + ENTER to select",
+                       font=GLUT_BITMAP_HELVETICA_12,color=(0.38,0.5,0.55))
+
+def draw_how_to_overlay():
+    draw_rect_2d(110,90,780,615,(0.04,0.06,0.12))
+    draw_rect_outline_2d(110,90,780,615,(0.3,0.6,1.0),2)
+    draw_text_centered(672,"HOW  TO  PLAY",
+                       font=GLUT_BITMAP_TIMES_ROMAN_24,color=(0.4,0.9,1.0))
+    lines=[
+        "C               Create a new state at a random 3D position",
+        "K               Cycle selected state (cycle through all states)",
+        "W/A/S/D         Move selected state in X-Y plane",
+        "Q / E           Move selected state up / down (Z axis)",
+        "F               Set selected state as START  (turns blue)",
+        "G               Toggle selected state as ACCEPT  (turns gold)",
+        "T               Enter transition mode from selected state",
+        "  then 0 or 1   Choose transition character",
+        "  then K + 0/1  Pick destination state and confirm",
+        "SPACE           Validate DFA against all test strings",
+        "M               Next question  (resets edges/start/accept)",
+        "R               Full reset",
+        "X               Undo last edge",
+        "Arrow keys      Rotate camera",
+        "+  /  -         Zoom in / out",
+        "Left-click      Select / drag a state sphere",
+        "H               Toggle this help screen",
+        "",
+        "Colours:  Green=normal   Blue=start   Gold=accept   Red=selected",
+    ]
+    y=630
+    for ln in lines:
+        if ln=="": y-=8; continue
+        col=(0.85,0.9,0.95) if not ln.startswith(" ") else (0.6,0.7,0.75)
+        draw_text(130,y,ln,font=GLUT_BITMAP_HELVETICA_12,color=col)
+        y-=22
+    draw_text_centered(104,"Press H or ESC to close",
+                       font=GLUT_BITMAP_HELVETICA_12,color=(0.4,0.6,0.7))
+
+# ==============================================
+#  GAME HUD + 3-D SCENE
+# ==============================================
+def draw_states():
+    for s in states:
+        if s not in pulse_states:
+            pulse_states[s]=random.uniform(0,2*pi)
+        pulse=(sin(time_val*2.0+pulse_states[s])+1)*0.5
+        x,y,z=states[s]["pos"]
+
+        if s==selected_state:        gr,gg,gb=1.0,0.3,0.1
+        elif states[s]["is_start"]:  gr,gg,gb=0.2,0.5,1.0
+        elif states[s]["is_accept"]: gr,gg,gb=1.0,0.9,0.0
+        else:                        gr,gg,gb=0.1,0.9,0.5
+
+        glPushMatrix(); glTranslatef(x,y,z)
+        glow_r=34+4*pulse; glLineWidth(2)
+        glColor3f(gr*0.5*pulse,gg*0.5*pulse,gb*0.5*pulse)
+        glBegin(GL_LINES)
+        for i in range(32):
+            a0=2*pi*i/32; a1=2*pi*(i+1)/32
+            glVertex3f(glow_r*cos(a0),glow_r*sin(a0),0)
+            glVertex3f(glow_r*cos(a1),glow_r*sin(a1),0)
+        glEnd()
+        glRotatef(60,1,0,0)
+        glColor3f(gr*0.3*pulse,gg*0.3*pulse,gb*0.3*pulse)
+        glBegin(GL_LINES)
+        for i in range(32):
+            a0=2*pi*i/32; a1=2*pi*(i+1)/32
+            glVertex3f(glow_r*cos(a0),glow_r*sin(a0),0)
+            glVertex3f(glow_r*cos(a1),glow_r*sin(a1),0)
+        glEnd()
+        glPopMatrix()
+
+        glPushMatrix(); glTranslatef(x,y,z)
+        sc=1.0+0.08*pulse; glScalef(sc,sc,sc)
+        glColor3f(gr,gg,gb)
+        q=gluNewQuadric(); gluSphere(q,28,20,20)
+        if states[s]["is_accept"]:
+            glColor3f(1.0,1.0,0.3); gluSphere(q,33+3*pulse,14,14)
+        glPopMatrix()
+        draw_text(x+10,y+35+z,f"q{s}",
+                  font=GLUT_BITMAP_HELVETICA_12,color=(gr,gg,gb))
+
+def draw_edges():
+    h=760; glLineWidth(3)
+    for idx,e in enumerate(edge_list):
+        src,dst,ch=e[0],e[1],e[2]
+        if src not in states or dst not in states: continue
+        x1,y1,z1=states[src]["pos"]; x2,y2,z2=states[dst]["pos"]
+        glColor3f(0.3,0.6,0.9)
+        glBegin(GL_LINES); glVertex3f(x1,y1,z1); glVertex3f(x2,y2,z2); glEnd()
+        num_dots=6; offset=(time_val*(0.6+0.1*(idx%3)))%1.0
+        glPointSize(7)
+        glBegin(GL_POINTS)
+        for d in range(num_dots):
+            t=((d/num_dots)+offset)%1.0
+            fx=x1+(x2-x1)*t; fy=y1+(y2-y1)*t; fz=z1+(z2-z1)*t
+            bri=sin(t*pi)
+            glColor3f(0.3*bri,0.8*bri,1.0*bri)
+            glVertex3f(fx,fy,fz)
+        glEnd()
+        draw_text(860,h,f"q{src}--{ch}->q{dst}",color=(0.4,0.85,1.0)); h-=22
+
+    for fe in flash_edges[:]:
+        src,dst,prog,col=fe[0],fe[1],fe[2],fe[3]
+        if src not in states or dst not in states: continue
+        x1,y1,z1=states[src]["pos"]; x2,y2,z2=states[dst]["pos"]
+        alp=max(0,1-prog); glLineWidth(6)
+        glColor3f(col[0]*alp,col[1]*alp,col[2]*alp)
+        glBegin(GL_LINES); glVertex3f(x1,y1,z1); glVertex3f(x2,y2,z2); glEnd()
+        glLineWidth(3)
+
+def draw_hud():
+    q=questions[current_question]
+    pulse=(sin(time_val*1.5)+1)*0.5
+    draw_text(10,775,f"DFA BUILDER  Q{current_question+1}/{len(questions)}",
+              color=(0.3+0.4*pulse,0.9,1.0))
+    draw_text(10,752,f"RULE: {q['rule']}",color=(1.0,0.85,0.2))
+
+    cc=(0.5,0.7,0.6)
+    draw_text(10,620,"C=create  K=cycle  WASD/Q/E=move  F=start  G=accept",color=cc)
+    draw_text(10,600,"T -> 0/1 -> K -> 0/1 = add transition   SPACE=validate",color=cc)
+    draw_text(10,580,"M=next question   R=full reset   X=undo edge   H=help",color=cc)
+    draw_text(10,560,"Arrow keys=orbit  +/-=zoom",color=cc)
+
+    sc=(1.0,0.4,0.2) if selected_state is not None else (0.4,0.4,0.4)
+    draw_text(700,752,f"SELECTED: q{selected_state}",color=sc)
+    draw_text(700,730,f"START:    q{find_start()}",color=(0.3,0.6,1.0))
+    draw_text(700,708,f"ACCEPTS:  {find_accept()}",color=(1.0,0.9,0.2))
+
+    h=650
+    draw_text(700, h+22, "--- RESULTS ---", color=(0.6,0.6,0.8))
+    for line in result_text.split("\n"):
+        if "OK"    in line: col=(0.2,1.0,0.4)
+        elif "WRONG" in line: col=(1.0,0.3,0.3)
+        elif "Score" in line:
+            tot=len(q["test_strings"])
+            col=((0.2,1.0,0.4) if score==tot else
+                 (1.0,0.85,0.2) if score>tot//2 else (1.0,0.3,0.3))
+        else: col=(0.8,0.8,0.8)
+        
+        # Draw the results at X=700 instead of X=10
+        draw_text(700, h, line, color=col)
+        h-=22
+    if transition_mode:
+        blink=(sin(time_val*6)+1)*0.5
+        draw_text_centered(30,
+                  f"TRANSITION: q{transition_src} -> q{transition_dst} (TYPE A CHARACTER)",
+                  font=GLUT_BITMAP_HELVETICA_18,
+                  color=(1.0,blink,0.0))
+
+# ==============================================
+#  CAMERA
+# ==============================================
+def setupCamera():
+    glMatrixMode(GL_PROJECTION); glLoadIdentity()
+    gluPerspective(70,WIN_W/WIN_H,0.1,2000)
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+    ex=camera_z*cos(radians(camera_y))*cos(radians(camera_x))
+    ey=camera_z*cos(radians(camera_y))*sin(radians(camera_x))
+    ez=camera_z*sin(radians(camera_y))
+    gluLookAt(ex,ey,ez,0,0,80,0,0,1)
+
+# ==============================================
+#  MOUSE
+# ==============================================
+def mouseListener(button, state_btn, x, y):
+    global selected_state, SCREEN, show_how_to
+    global camera_z, menu_hover
+    global transition_mode, transition_src, transition_dst
+
+    gl_y = WIN_H - y
+
+    if SCREEN=="INTRO":
+        if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN:
+            if intro_timer >= INTRO_DUR-0.6:
+                SCREEN="MENU"
+        return
+
+    if SCREEN=="MENU":
+        if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN:
+            if show_how_to:
+                show_how_to=False; return
+            for i in range(len(MENU_OPTIONS)):
+                rx,ry,rw,rh=_menu_item_rect(i)
+                if rx<=x<=rx+rw and ry<=gl_y<=ry+rh:
+                    _handle_menu_select(i); return
+        return
+
+    if SCREEN=="PLAYING":
+        if show_how_to:
+            if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN:
+                show_how_to=False
+            return
+
+        # 1. LEFT CLICK: Select the source state (s1)
+        if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN:
+            hit=_pick_state_2d(x,y)
+            if hit is not None:
+                selected_state=hit
+            else:
+                selected_state=None
+
+        # 2. RIGHT CLICK: Select destination (s2) and trigger transition
+        if button==GLUT_RIGHT_BUTTON and state_btn==GLUT_DOWN:
+            hit=_pick_state_2d(x,y)
+            if hit is not None and selected_state is not None:
+                transition_src = selected_state
+                transition_dst = hit
+                transition_mode = True  # Activates the prompt
+
+        # Scroll wheel zooming
+        if button==3 and state_btn==GLUT_DOWN:
+            if camera_z>120: camera_z-=20
+        if button==4 and state_btn==GLUT_DOWN:
+            if camera_z<1200: camera_z+=20
+
+def _pick_state_2d(mx,my):
+    try:
+        viewport  =glGetIntegerv(GL_VIEWPORT)
+        modelview =glGetDoublev(GL_MODELVIEW_MATRIX)
+        projection=glGetDoublev(GL_PROJECTION_MATRIX)
+        best_sid=None; best_dist=999
+        for sid,st in states.items():
+            sx,sy,sz=gluProject(st["pos"][0],st["pos"][1],st["pos"][2],
+                                modelview,projection,viewport)
+            d=sqrt((mx-sx)**2+(my-(WIN_H-sy))**2)
+            if d<38 and d<best_dist:
+                best_dist=d; best_sid=sid
+        return best_sid
+    except Exception:
+        return None
+
+
+def _handle_menu_select(i):
+    global SCREEN,show_how_to
+    label=MENU_OPTIONS[i]
+    if label=="START GAME":   SCREEN="PLAYING"
+    elif label=="HOW TO PLAY":show_how_to=True
+    elif label=="QUIT":       glutLeaveMainLoop()
+
+# ==============================================
+#  KEYBOARD
+# ==============================================
+def keyboardListener(key,x,y):
+    global SCREEN,state_id,selected_state,transition_mode,transition_src
+    global current_question,result_text,camera_z,score
+    global flash_edges,flow_string,flow_index,show_how_to,menu_hover
+
+    if SCREEN=="INTRO":
+        if intro_timer>=INTRO_DUR-0.6: SCREEN="MENU"
+        return
+
+    if SCREEN=="MENU":
+        if show_how_to:
+            if key in (b'h',b'H',b'\x1b'): show_how_to=False
+            return
+        if key in (b'\r',b'\n'):
+            if 0<=menu_hover<len(MENU_OPTIONS): _handle_menu_select(menu_hover)
+        return
+
+    # PLAYING
+    if show_how_to:
+        if key in (b'h',b'H',b'\x1b'): show_how_to=False
+        return
+
+    if key in (b'h',b'H'): show_how_to=True; return
+
+    if key==b'c':
+        a=random.uniform(-150,150); b=random.uniform(-150,150); c=random.uniform(50,220)
+        states[state_id]={"pos":[a,b,c],"is_start":False,"is_accept":False}
+        spawn_particles(a,b,c,20,(0.1,0.9,0.5),speed=8)
+        selected_state=state_id; state_id+=1
+
+    if key==b'k' and len(states)>0:
+        keys=list(states.keys())
+        if selected_state not in keys: selected_state=keys[0]
+        else:
+            idx=keys.index(selected_state)
+            selected_state=keys[(idx+1)%len(keys)]
+
+    if selected_state is not None and selected_state in states:
+        pos=states[selected_state]["pos"]
+        if key==b'w': pos[1]+=10
+        if key==b's': pos[1]-=10
+        if key==b'a': pos[0]-=10
+        if key==b'd': pos[0]+=10
+        if key==b'q': pos[2]+=10
+        if key==b'e': pos[2]-=10
+        if key==b'f':
+            for s in states: states[s]["is_start"]=False
+            states[selected_state]["is_start"]=True
+            spawn_particles(*states[selected_state]["pos"],30,(0.2,0.5,1.0),speed=10)
+        if key==b'g':
+            states[selected_state]["is_accept"]=not states[selected_state]["is_accept"]
+            if states[selected_state]["is_accept"]:
+                spawn_particles(*states[selected_state]["pos"],40,(1.0,0.9,0.0),speed=12)
+
+    if key==b't':
+        if selected_state is not None:
+            transition_mode=True; transition_src=selected_state
+
+    if key==b'x':
+        if edge_list:
+            last=edge_list.pop()
+            transitions.pop((last[0],last[2]),None)
+        transition_mode=False; transition_src=None
+
+    if transition_mode:
+        # Decode the key to a string
+        char = key.decode('utf-8', 'ignore')
+        
+        # Check if the user pressed a valid letter or number (0, 1, a, b, etc.)
+        if char.isalnum():
+            tkey = (transition_src, char)
+            
+            # Create transition if it doesn't already exist
+            if tkey not in transitions:
+                transitions[tkey] = transition_dst
+                edge_list.append((transition_src, transition_dst, char))
+                
+                # Spawn connection particles
+                if transition_src in states and transition_dst in states:
+                    px=(states[transition_src]["pos"][0]+states[transition_dst]["pos"][0])/2
+                    py=(states[transition_src]["pos"][1]+states[transition_dst]["pos"][1])/2
+                    pz=(states[transition_src]["pos"][2]+states[transition_dst]["pos"][2])/2
+                    spawn_particles(px,py,pz,25,(0.3,0.8,1.0),speed=6)
+        
+        # Always exit transition mode after a key is pressed
+        transition_mode = False
+        transition_src = None
+        transition_dst = None
+        return
+
+    if key==b' ':
+        q=questions[current_question]; score=0; result_text=""; flash_edges.clear()
+        if not is_complete_dfa(q["alphabet"]):
+            result_text="Warning: DFA is incomplete!\n"
+        for string in q["test_strings"]:
+            res,path=simulate_dfa(string); correct=q["expected"][string]
+            if res==correct:
+                score+=1; result_text+=f"'{string}': OK\n"; col=(0.2,1.0,0.4)
+            else:
+                result_text+=f"'{string}': WRONG\n"; col=(1.0,0.3,0.3)
+            spawn_travel_particle(path,col)
+            for i in range(len(path)-1):
+                flash_edges.append([path[i],path[i+1],0.0,col])
+        flow_string=q["test_strings"][-1]; flow_index=0
+        total=len(q["test_strings"]); result_text+=f"Score: {score}/{total}"
+        if score==total:
+            for s in states:
+                spawn_particles(*states[s]["pos"],60,(1.0,0.9,0.1),speed=15,lifetime=2.5)
+        elif score>0:
+            for s in find_accept():
+                spawn_particles(*states[s]["pos"],30,(0.2,1.0,0.4),speed=10)
+
+    if key==b'm':
+        if current_question<len(questions)-1: current_question+=1
+        reset_connections(); result_text=""; score=0; flow_string=""; flow_index=0
+
+    if key in (b'+',b'='):
+        if camera_z>120: camera_z-=25
+    if key==b'-':
+        if camera_z<1200: camera_z+=25
+
+    if key==b'r':
+        states.clear(); transitions.clear(); edge_list.clear()
+        flash_edges.clear(); particle_list.clear()
+        selected_state=None; state_id=0; result_text=""; score=0
+        flow_string=""; flow_index=0
+
+def specialKeyListener(key,x,y):
+    global camera_x,camera_y,menu_hover
+    if SCREEN=="MENU":
+        if key==GLUT_KEY_DOWN: menu_hover=(menu_hover+1)%len(MENU_OPTIONS)
+        if key==GLUT_KEY_UP:   menu_hover=(menu_hover-1)%len(MENU_OPTIONS)
+        return
+    if key==GLUT_KEY_LEFT:  camera_x-=5
+    if key==GLUT_KEY_RIGHT: camera_x+=5
+    if key==GLUT_KEY_UP:
+        if camera_y<85: camera_y+=5
+    if key==GLUT_KEY_DOWN:
+        if camera_y>5: camera_y-=5
+
+# ==============================================
+#  MAIN DISPLAY
+# ==============================================
+def showScreen():
+    glClearColor(0.02,0.02,0.06,1)
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    glViewport(0,0,WIN_W,WIN_H)
+
+    if SCREEN=="INTRO":
+        glMatrixMode(GL_PROJECTION); glLoadIdentity()
+        gluOrtho2D(0,WIN_W,0,WIN_H)
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+        draw_intro_screen()
+
+    elif SCREEN=="MENU":
+        glMatrixMode(GL_PROJECTION); glLoadIdentity()
+        gluOrtho2D(0,WIN_W,0,WIN_H)
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+        draw_menu_screen()
+        if show_how_to: draw_how_to_overlay()
+
+    elif SCREEN=="PLAYING":
+        setupCamera()
+        draw_stars(); draw_floor(); draw_axes()
+        draw_edges(); draw_states()
+        draw_particles(); draw_travel_particles()
+        draw_input_flow(); draw_hud()
+        if show_how_to: draw_how_to_overlay()
 
     glutSwapBuffers()
 
-def keyboard_listener(key, x, y):
-    global game_state, player_angle, camera_mode, time_warp
+# ==============================================
+#  IDLE
+# ==============================================
+_last_time=[0.0]
 
-    if key == b'\x1b':
-        game_state = "MENU"
-        glutPostRedisplay()
-        return
+def idle():
+    global time_val,intro_timer
+    now=glutGet(GLUT_ELAPSED_TIME)/1000.0
+    dt=min(now-_last_time[0],0.05)
+    _last_time[0]=now
+    time_val+=dt
 
-    if key in [b'm', b'M'] and game_state in ["PLAYING", "GAMEOVER", "WIN"]:
-        game_state = "MENU"
-
-    if game_state == "MENU":
-        if key == b'1': start_game(1)
-        if key == b'2' and level_unlocked >= 2: start_game(2)
-        if key == b'3' and level_unlocked >= 3: start_game(3)
-    elif game_state == "PLAYING":
-        if key in [b'a', b'A']: player_angle += 5.0
-        if key in [b'd', b'D']: player_angle -= 5.0
-        if key in [b'c', b'C']:
-            modes = ["FREE", "FOLLOW", "FPP"]
-            camera_mode = modes[(modes.index(camera_mode) + 1) % 3]
-        if key in [b't', b'T']: time_warp = True
+    if SCREEN in ("INTRO","MENU"):
+        intro_timer+=dt if SCREEN=="INTRO" else 0
+        update_intro_nodes(dt)
+    elif SCREEN=="PLAYING":
+        update_particles(dt)
+        update_travel_particles(dt)
+        update_flow(dt)
+        for fe in flash_edges:
+            fe[2]=min(1.0,fe[2]+dt*0.6)
 
     glutPostRedisplay()
 
-def keyboard_up_listener(key, x, y):
-    global time_warp
-    if key in [b't', b'T']:
-        time_warp = False
-
-def mouse_listener(button, state, x, y):
-    if game_state == "PLAYING" and button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
-        if laser_timer <= 0:
-            px = orbit_radius * math.cos(math.radians(player_angle))
-            py = orbit_radius * math.sin(math.radians(player_angle))
-            bullets.append({'x': px, 'y': py, 'angle': player_angle, 'is_laser': False})
-
-def special_listener(key, x, y):
-    global camera_theta, camera_phi
-    if camera_mode == "FREE":
-        if key == GLUT_KEY_LEFT:  camera_theta += 5
-        if key == GLUT_KEY_RIGHT: camera_theta -= 5
-        if key == GLUT_KEY_UP:    camera_phi = min(85, camera_phi + 5)
-        if key == GLUT_KEY_DOWN:  camera_phi = max(5, camera_phi - 5)
-
+# ==============================================
+#  MAIN
+# ==============================================
 def main():
-    global last_time
-    glutInit(sys.argv)
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH | GLUT_ALPHA)
-    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
-    glutCreateWindow(b"Planet Guardian 3D - Ultimate Boss & Laser")
-    init_lighting()
-    last_time = time.time()
-    glutDisplayFunc(display)
-    glutIdleFunc(update)
-    glutKeyboardFunc(keyboard_listener)
-    glutKeyboardUpFunc(keyboard_up_listener)
-    glutMouseFunc(mouse_listener)
-    glutSpecialFunc(special_listener)
+    glutInit()
+    glutInitDisplayMode(GLUT_DOUBLE|GLUT_RGB|GLUT_DEPTH)
+    glutInitWindowSize(WIN_W,WIN_H)
+    glutInitWindowPosition(80,40)
+    glutCreateWindow(b"3D DFA Simulator")
+    glEnable(GL_DEPTH_TEST)
+    glutDisplayFunc(showScreen)
+    glutMouseFunc(mouseListener)
+    glutKeyboardFunc(keyboardListener)
+    glutSpecialFunc(specialKeyListener)
+    glutIdleFunc(idle)
     glutMainLoop()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
