@@ -944,35 +944,34 @@ def showScreen():
         if SCREEN == "INTRO":
             fd = min(1.0, intro_timer/1.5)
             t1 = "3D DFA SIMULATOR"
-            draw_text_color(WIN_W//2 - text_width_est(t1)//2, mid_y+50, t1, 0.4*fd, 0.7*fd, fd)
+            draw_text_color(WIN_W//2 - text_width_full(t1)//2, mid_y+50, t1, 0.4*fd, 0.7*fd, fd)
             if intro_timer > 1.5: 
                 t2 = "Press any key..."
-                draw_text_color(WIN_W//2 - text_width_est(t2)//2, mid_y-50, t2, 0.6, 0.9, 1.0)
+                draw_text_color(WIN_W//2 - text_width_full(t2)//2, mid_y-50, t2, 0.6, 0.9, 1.0)
         elif SCREEN == "MENU":
             t3 = "Master Finite Automata"
-            draw_text_color(WIN_W//2 - text_width_est(t3)//2, mid_y+150, t3, 0.5, 0.75, 0.85)
-            for i, lbl in enumerate(MENU_OPTS):
+            draw_text_color(WIN_W//2 - text_width_full(t3)//2, mid_y+150, t3, 0.5, 0.75, 0.85)
+            for i, lbl in enumerate(MENU_OPTIONS):  # <--- FIXED MENU_OPTS
                 y = (mid_y+20) - i*66
                 draw_rect(WIN_W//2-160, y, 320, 52, 0.05, 0.08, 0.14, -0.5)
                 draw_rect_outline(WIN_W//2-160, y, 320, 52, 0.18, 0.32, 0.52, -0.4)
-                draw_text_color(WIN_W//2 - text_width_est(lbl)//2, y+18, lbl, 0.8, 0.9, 1.0)
+                draw_text_color(WIN_W//2 - text_width_full(lbl)//2, y+18, lbl, 0.8, 0.9, 1.0)
             if show_how_to:
                 draw_rect(80,60,WIN_W-160,WIN_H-120, 0.04,0.06,0.12, -0.2)
                 draw_rect_outline(80,60,WIN_W-160,WIN_H-120, 0.3,0.6,1.0, -0.1)
                 t4 = "HOW TO PLAY"
-                draw_text_color(WIN_W//2 - text_width_est(t4)//2, WIN_H-100, t4, 0.4, 0.9, 1.0)
+                draw_text_color(WIN_W//2 - text_width_full(t4)//2, WIN_H-100, t4, 0.4, 0.9, 1.0)
                 draw_text_color(100, WIN_H-160, "NO MOUSE IN 3D DUE TO CONSTRAINTS.", 1,1,0)
                 draw_text_color(100, WIN_H-200, "C: New State | K: Cycle State | DEL: Delete", 0.8,0.9,1)
                 draw_text_color(100, WIN_H-230, "T: Transition (Select Source, Press T, Select Dest, Press 0/1)", 0.8,0.9,1)
         elif SCREEN == "GAMEOVER":
             t5 = "GAME OVER"
             t6 = "Press R to Restart"
-            draw_text_color(WIN_W//2 - text_width_est(t5)//2, mid_y+50, t5, 1,0.2,0.2)
-            draw_text_color(WIN_W//2 - text_width_est(t6)//2, mid_y, t6, 1,1,0.5)
+            draw_text_color(WIN_W//2 - text_width_full(t5)//2, mid_y+50, t5, 1,0.2,0.2)
+            draw_text_color(WIN_W//2 - text_width_full(t6)//2, mid_y, t6, 1,1,0.5)
         elif SCREEN == "VICTORY":
             t7 = "CONGRATULATIONS"
-            draw_text_color(WIN_W//2 - text_width_est(t7)//2, mid_y+50, t7, 0.2,1.0,0.2)
-
+            draw_text_color(WIN_W//2 - text_width_full(t7)//2, mid_y+50, t7, 0.2,1.0,0.2)
     elif SCREEN == "PLAYING":
         # 3D Scene (Right Panel)
         glViewport(LEFT_W, 0, RIGHT_W, WIN_H)
