@@ -520,15 +520,11 @@ def draw_states():
             glPushMatrix(); glTranslatef(x, y, z + 56)
             q_sim = gluNewQuadric()
             
-            # Solid dark core
-            glColor3f(0.4, 0.0, 0.4)
-            gluQuadricDrawStyle(q_sim, GLU_FILL)
-            gluSphere(q_sim, 12, 12, 12)
+            # Simply draw a solid, pulsing magenta sphere
+            # No banned gluQuadricDrawStyle or GLU_LINE functions needed!
+            glColor3f(1.0, 0.2, 1.0)
+            gluSphere(q_sim, 12 + 2 * pulse, 12, 12)
             
-            # Bright wireframe
-            glColor3f(1.0, 0.0, 1.0)
-            gluQuadricDrawStyle(q_sim, GLU_LINE)
-            gluSphere(q_sim, 12.5, 12, 12)
             glPopMatrix()
 
         draw_text_3d(x + 32, y + 32, z, f"q{s}", 1, 1, 1)
