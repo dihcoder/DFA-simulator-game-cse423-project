@@ -181,8 +181,8 @@ def check_dfa_completeness(alphabet=None):
 # ─────────────────────────────────────────────
 #  MISSING UI / TEXT FUNCTIONS
 # ─────────────────────────────────────────────
-def text_width_full(text, font=GLUT_BITMAP_HELVETICA_18):
-    return sum(glutBitmapWidth(font,ord(c)) for c in text)
+def text_width_full(text):
+    return len(text) * 9
 
 def draw_text_scene(x, y, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,1)):
     glColor3f(*color)
@@ -195,7 +195,7 @@ def draw_text_scene(x, y, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,1)):
     glMatrixMode(GL_MODELVIEW)
 
 def draw_text_centered_full(cy, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,1)):
-    w = text_width_full(text, font)
+    w = text_width_full(text)
     draw_text_scene(WIN_W//2 - w//2, cy, text, font, color)
 
 def draw_rect_2d(x,y,w,h,color):
@@ -216,13 +216,18 @@ def draw_rect_outline_2d(x,y,w,h,color,lw=2):
     gluOrtho2D(0,WIN_W,0,WIN_H)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
     glColor3f(*color); glLineWidth(lw)
-    glBegin(GL_LINE_LOOP)
-    glVertex2f(x,y); glVertex2f(x+w,y); glVertex2f(x+w,y+h); glVertex2f(x,y+h)
+    
+    # CHANGED: Replaced GL_LINE_LOOP with GL_LINES
+    glBegin(GL_LINES)
+    glVertex2f(x,y); glVertex2f(x+w,y)
+    glVertex2f(x+w,y); glVertex2f(x+w,y+h)
+    glVertex2f(x+w,y+h); glVertex2f(x,y+h)
+    glVertex2f(x,y+h); glVertex2f(x,y)
     glEnd()
+    
     glLineWidth(1)
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
     glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
-
 # ─────────────────────────────────────────────
 #  DRAW HELPERS
 # ─────────────────────────────────────────────
@@ -402,18 +407,16 @@ def draw_intro_nodes():
                 glVertex2f(nj["x"],nj["y"]); 
                 glEnd()
     for n in nodes:
-        pulse=(sin(time_val*2+n["phase"])+1)*0.5
+        pulse=(math.sin(time_val*2+n["phase"])+1)*0.5
         r=n["r"]+4*pulse; cr,cg,cb=n["col"]
+        
+        # CHANGED: Replaced GL_TRIANGLE_FAN with GL_QUADS
         glColor3f(cr*0.25,cg*0.25,cb*0.25)
-        glBegin(GL_TRIANGLE_FAN); 
-        glVertex2f(n["x"],n["y"])
-        for k in range(25): a=2*pi*k/24; 
-        glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
-        glEnd()
-        glColor3f(cr,cg,cb); glLineWidth(2)
-        glBegin(GL_LINE_LOOP)
-        for k in range(24): a=2*pi*k/24; 
-        glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
+        glBegin(GL_QUADS)
+        glVertex2f(n["x"]-r, n["y"]-r)
+        glVertex2f(n["x"]+r, n["y"]-r)
+        glVertex2f(n["x"]+r, n["y"]+r)
+        glVertex2f(n["x"]-r, n["y"]+r)
         glEnd()
     glPopMatrix(); 
     glMatrixMode(GL_PROJECTION); 
@@ -517,28 +520,16 @@ def draw_states():
         elif is_accept:              gr, gg, gb = 1.0, 1.0, 0.0
         else:                        gr, gg, gb = 0.15, 0.75, 0.35
 
-        # ── Core 3D Holographic Sphere ─────────────────────────────
         glPushMatrix(); glTranslatef(x, y, z)
         sc = 1.0 + 0.08 * pulse
         glScalef(sc, sc, sc)
         
-        q = gluNewQuadric()
+        # CHANGED: Removed gluQuadricDrawStyle, GLU_FILL, GLU_LINE
+        gluSphere(gluNewQuadric(), 28, 16, 16)
 
-        # 1. Draw the dark solid base so we can't see through the back
-        glColor3f(gr * 0.25, gg * 0.25, gb * 0.25)
-        gluQuadricDrawStyle(q, GLU_FILL)
-        gluSphere(q, 28, 16, 16)
-
-        # 2. Draw a bright 3D wireframe slightly larger to show curvature!
-        glColor3f(gr, gg, gb)
-        gluQuadricDrawStyle(q, GLU_LINE)
-        gluSphere(q, 28.5, 16, 16)
-
-        # Accept State Double Ring
         if states[s]["is_accept"]:
             glColor3f(1.0, 1.0, 0.3)
-            gluQuadricDrawStyle(q, GLU_LINE)
-            gluSphere(q, 34 + 3 * pulse, 12, 12)
+            gluSphere(gluNewQuadric(), 34 + 3 * pulse, 12, 12)
             
         glPopMatrix()
         # ───────────────────────────────────────────────────────────
@@ -689,56 +680,6 @@ def draw_hud():
 # ─────────────────────────────────────────────
 #  MOUSE INTERACTION (From GitHub Version)
 # ─────────────────────────────────────────────
-def _pick_state_scene(sx, sy):
-    try:
-        viewport   = glGetIntegerv(GL_VIEWPORT)
-        modelview  = glGetDoublev(GL_MODELVIEW_MATRIX)
-        projection = glGetDoublev(GL_PROJECTION_MATRIX)
-        best_sid=None; best_dist=999
-        for sid,st in states.items():
-            wx,wy,wz=st["pos"]
-            px,py,pz=gluProject(wx,wy,wz,modelview,projection,viewport)
-            d=sqrt((sx-px)**2+((WIN_H-sy)-py)**2)
-            if d<40 and d<best_dist:
-                best_dist=d; best_sid=sid
-        return best_sid
-    except Exception:
-        return None
-
-def get_3d_mouse_pos(x, y):
-    """Casts a ray from the 2D mouse click into the 3D world to find the X,Y coordinates on the Z=60 grid."""
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
-    gluPerspective(90, RIGHT_W / WIN_H, 0.1, 2000)
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
-    
-    ex = camera_z * cos(radians(camera_y)) * cos(radians(camera_x))
-    ey = camera_z * cos(radians(camera_y)) * sin(radians(camera_x))
-    ez = camera_z * sin(radians(camera_y))
-    gluLookAt(ex, ey, ez, 0, 0, 0, 0, 0, 1)
-
-    modelview = glGetDoublev(GL_MODELVIEW_MATRIX)
-    projection = glGetDoublev(GL_PROJECTION_MATRIX)
-    viewport = [LEFT_W, 0, RIGHT_W, WIN_H] # The 3D scene is in the right panel
-
-    gl_y = WIN_H - y
-
-    # Find where the mouse ray starts (near plane) and ends (far plane)
-    nx, ny, nz = gluUnProject(x, gl_y, 0.0, modelview, projection, viewport)
-    fx, fy, fz = gluUnProject(x, gl_y, 1.0, modelview, projection, viewport)
-
-    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
-
-    # Calculate exactly where the ray hits the Z=60 plane (where states spawn)
-    dx = fx - nx
-    dy = fy - ny
-    dz = fz - nz
-    if dz == 0: return nx, ny, 60
-    t = (60.0 - nz) / dz
-    
-    # Return grid-snapped coordinates
-    hit_x = round((nx + t * dx) / 20) * 20
-    hit_y = round((ny + t * dy) / 20) * 20
-    return hit_x, hit_y, 60.0
 
 def mouseListener(button, state_btn, x, y):
     global selected_state, SCREEN, show_how_to, camera_z, menu_hover
@@ -771,44 +712,6 @@ def mouseListener(button, state_btn, x, y):
 
     if SCREEN in ("GAMEOVER","VICTORY"): return
 
-    if SCREEN=="PLAYING":
-        if show_how_to:
-            if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN: show_how_to=False
-            return
-
-        scene_x = x - LEFT_W
-        if scene_x < 0: return # Clicked the HUD
-
-        if button==GLUT_LEFT_BUTTON and state_btn==GLUT_DOWN:
-            hit=_pick_state_scene(x, y)    # <--- FIXED: Pass x instead of scene_x
-            if hit is not None: selected_state=hit
-            else: 
-                # --- NEW FEATURE: Spawn a sphere on empty click ---
-                global state_id
-                spawn_x, spawn_y, spawn_z = get_3d_mouse_pos(x, y)
-                
-                # Create the state at the exact mouse location!
-                states[state_id] = {"pos": [spawn_x, spawn_y, spawn_z], "is_start": False, "is_accept": False}
-                spawn_particles(spawn_x, spawn_y, spawn_z, 20, (0.1, 0.9, 0.5), speed=8)
-                
-                selected_state = state_id
-                state_id += 1
-
-        if button==GLUT_RIGHT_BUTTON and state_btn==GLUT_DOWN:
-            hit=_pick_state_scene(x, y)    # <--- FIXED: Pass x instead of scene_x
-            if hit is not None:
-                if transition_mode and transition_src is not None:
-                    transition_dst = hit
-                else:
-                    transition_src = hit
-                    transition_dst = None
-                    transition_mode = True
-                    selected_state  = hit
-
-        if button==3 and state_btn==GLUT_DOWN:
-            if camera_z>100: camera_z-=20
-        if button==4 and state_btn==GLUT_DOWN:
-            if camera_z<1500: camera_z+=20
 
 # ─────────────────────────────────────────────
 #  KEYBOARD (Your Core Logic + Screens)
