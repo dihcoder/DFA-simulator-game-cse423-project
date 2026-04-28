@@ -198,20 +198,31 @@ def draw_text_centered_full(cy, text, font=GLUT_BITMAP_HELVETICA_18, color=(1,1,
     w = text_width_full(text)
     draw_text_scene(WIN_W//2 - w//2, cy, text, font, color)
 
-def draw_rect(x, y, w, h, r, g, b, z=-0.5):
-    glColor3f(r, g, b)
+def draw_rect_2d(x,y,w,h,color):
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glColor3f(*color)
     glBegin(GL_QUADS)
-    glVertex3f(x, y, z); glVertex3f(x+w, y, z)
-    glVertex3f(x+w, y+h, z); glVertex3f(x, y+h, z)
+    glVertex2f(x,y); glVertex2f(x+w,y); glVertex2f(x+w,y+h); glVertex2f(x,y+h)
     glEnd()
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
 
-def draw_rect_outline(x, y, w, h, r, g, b, z=-0.4):
-    glColor3f(r, g, b)
+def draw_rect_outline_2d(x,y,w,h,color,lw=2):
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glColor3f(*color); glLineWidth(lw)
+    
+    # CHANGED: Replaced GL_LINE_LOOP with GL_LINES
     glBegin(GL_LINES)
-    glVertex3f(x, y, z); glVertex3f(x+w, y, z)
-    glVertex3f(x+w, y, z); glVertex3f(x+w, y+h, z)
-    glVertex3f(x+w, y+h, z); glVertex3f(x, y+h, z)
-    glVertex3f(x, y+h, z); glVertex3f(x, y, z)
+    glVertex2f(x,y); glVertex2f(x+w,y)
+    glVertex2f(x+w,y); glVertex2f(x+w,y+h)
+    glVertex2f(x+w,y+h); glVertex2f(x,y+h)
+    glVertex2f(x,y+h); glVertex2f(x,y)
     glEnd()
     
     glLineWidth(1)
@@ -374,36 +385,44 @@ def update_intro_nodes(dt):
         if n["y"]<n["r"] or n["y"]>WIN_H-n["r"]: n["vy"]*=-1
 
 def draw_intro_nodes():
-    global _intro_nodes
-    if _intro_nodes is None:
-        _intro_nodes = []
-        for _ in range(9):
-            _intro_nodes.append({"x":random.uniform(80,WIN_W-80),"y":random.uniform(100,WIN_H-100),
-                                 "vx":random.uniform(-20,20),"vy":random.uniform(-15,15),
-                                 "r":random.uniform(16,28),"phase":random.uniform(0,2*math.pi),
-                                 "col":random.choice([(0.2,0.5,1.0),(0.1,0.9,0.5),(1.0,0.9,0.0)])})
-    
-    for i in range(len(_intro_nodes)):
-        for j in range(i+1, len(_intro_nodes)):
-            ni, nj = _intro_nodes[i], _intro_nodes[j]
-            dist = math.sqrt((ni["x"]-nj["x"])**2 + (ni["y"]-nj["y"])**2)
-            if dist < 220:
-                alp = (1 - dist/220) * 0.35
-                glColor3f(0.2*alp, 0.6*alp, alp)
-                glBegin(GL_LINES)
-                # Pushed lines backward to -0.8
-                glVertex3f(ni["x"], ni["y"], -0.8); glVertex3f(nj["x"], nj["y"], -0.8)
+    nodes=get_intro_nodes()
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION); 
+    glPushMatrix(); 
+    glLoadIdentity()
+    gluOrtho2D(0,WIN_W,0,WIN_H)
+    glMatrixMode(GL_MODELVIEW); 
+    glPushMatrix(); 
+    glLoadIdentity()
+    for i in range(len(nodes)):
+        for j in range(i+1,len(nodes)):
+            ni,nj=nodes[i],nodes[j]
+            dist=sqrt((ni["x"]-nj["x"])**2+(ni["y"]-nj["y"])**2)
+            if dist<220:
+                alp=(1-dist/220)*0.35
+                glLineWidth(5); 
+                glColor3f(0.4*alp,0.8*alp,alp)
+                glBegin(GL_LINES); 
+                glVertex2f(ni["x"],ni["y"]); 
+                glVertex2f(nj["x"],nj["y"]); 
                 glEnd()
-    
-    for n in _intro_nodes:
-        n["x"]+=n["vx"]*0.05; n["y"]+=n["vy"]*0.05
-        if n["x"]<n["r"] or n["x"]>WIN_W-n["r"]: n["vx"]*=-1
-        if n["y"]<n["r"] or n["y"]>WIN_H-n["r"]: n["vy"]*=-1
-        pulse = (math.sin(time_val*2+n["phase"])+1)*0.5
-        r = n["r"] + 4*pulse; cr, cg, cb = n["col"]
-        # Pushed nodes backward to -0.7 and -0.6
-        draw_rect(n["x"]-r, n["y"]-r, r*2, r*2, cr*0.25, cg*0.25, cb*0.25, -0.7)
-        draw_rect_outline(n["x"]-r, n["y"]-r, r*2, r*2, cr, cg, cb, -0.6)
+    for n in nodes:
+        pulse=(math.sin(time_val*2+n["phase"])+1)*0.5
+        r=n["r"]+4*pulse; cr,cg,cb=n["col"]
+        
+        # CHANGED: Replaced GL_TRIANGLE_FAN with GL_QUADS
+        glColor3f(cr*0.25,cg*0.25,cb*0.25)
+        glBegin(GL_QUADS)
+        glVertex2f(n["x"]-r, n["y"]-r)
+        glVertex2f(n["x"]+r, n["y"]-r)
+        glVertex2f(n["x"]+r, n["y"]+r)
+        glVertex2f(n["x"]-r, n["y"]+r)
+        glEnd()
+    glPopMatrix(); 
+    glMatrixMode(GL_PROJECTION); 
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); 
+    glEnable(GL_DEPTH_TEST)
 
 def draw_intro_screen():
     draw_rect_2d(0,0,WIN_W,WIN_H,(0.02,0.02,0.06))
@@ -520,11 +539,15 @@ def draw_states():
             glPushMatrix(); glTranslatef(x, y, z + 56)
             q_sim = gluNewQuadric()
             
-            # Simply draw a solid, pulsing magenta sphere
-            # No banned gluQuadricDrawStyle or GLU_LINE functions needed!
-            glColor3f(1.0, 0.2, 1.0)
-            gluSphere(q_sim, 12 + 2 * pulse, 12, 12)
+            # Solid dark core
+            glColor3f(0.4, 0.0, 0.4)
+            gluQuadricDrawStyle(q_sim, GLU_FILL)
+            gluSphere(q_sim, 12, 12, 12)
             
+            # Bright wireframe
+            glColor3f(1.0, 0.0, 1.0)
+            gluQuadricDrawStyle(q_sim, GLU_LINE)
+            gluSphere(q_sim, 12.5, 12, 12)
             glPopMatrix()
 
         draw_text_3d(x + 32, y + 32, z, f"q{s}", 1, 1, 1)
@@ -926,80 +949,60 @@ def tick_simulation():
 #  DISPLAY
 # ─────────────────────────────────────────────
 def showScreen():
+    glClearColor(0.04, 0.04, 0.10, 1.0)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-    if SCREEN in ("INTRO", "MENU", "GAMEOVER", "VICTORY"):
+    if SCREEN in ("INTRO","MENU","GAMEOVER","VICTORY"):
         glViewport(0, 0, WIN_W, WIN_H)
-        glMatrixMode(GL_PROJECTION); glLoadIdentity(); gluOrtho2D(0, WIN_W, 0, WIN_H)
-        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
-
-        # Banned glClearColor replacement: Draw massive quad pushed far back to -0.9
-        if SCREEN == "GAMEOVER": draw_rect(0,0,WIN_W,WIN_H, 0.1,0.0,0.0, -0.9)
-        elif SCREEN == "VICTORY": draw_rect(0,0,WIN_W,WIN_H, 0.0,0.1,0.0, -0.9)
-        else: draw_rect(0,0,WIN_W,WIN_H, 0.02,0.02,0.06, -0.9)
-
-        draw_intro_nodes()
-        mid_y = WIN_H // 2
-
-        if SCREEN == "INTRO":
-            fd = min(1.0, intro_timer/1.5)
-            t1 = "3D DFA SIMULATOR"
-            draw_text_color(WIN_W//2 - text_width_full(t1)//2, mid_y+50, t1, 0.4*fd, 0.7*fd, fd)
-            if intro_timer > 1.5: 
-                t2 = "Press any key..."
-                draw_text_color(WIN_W//2 - text_width_full(t2)//2, mid_y-50, t2, 0.6, 0.9, 1.0)
-        elif SCREEN == "MENU":
-            t3 = "Master Finite Automata"
-            draw_text_color(WIN_W//2 - text_width_full(t3)//2, mid_y+150, t3, 0.5, 0.75, 0.85)
-            for i, lbl in enumerate(MENU_OPTIONS):  # <--- FIXED MENU_OPTS
-                y = (mid_y+20) - i*66
-                draw_rect(WIN_W//2-160, y, 320, 52, 0.05, 0.08, 0.14, -0.5)
-                draw_rect_outline(WIN_W//2-160, y, 320, 52, 0.18, 0.32, 0.52, -0.4)
-                draw_text_color(WIN_W//2 - text_width_full(lbl)//2, y+18, lbl, 0.8, 0.9, 1.0)
-            if show_how_to:
-                draw_rect(80,60,WIN_W-160,WIN_H-120, 0.04,0.06,0.12, -0.2)
-                draw_rect_outline(80,60,WIN_W-160,WIN_H-120, 0.3,0.6,1.0, -0.1)
-                t4 = "HOW TO PLAY"
-                draw_text_color(WIN_W//2 - text_width_full(t4)//2, WIN_H-100, t4, 0.4, 0.9, 1.0)
-                draw_text_color(100, WIN_H-160, "NO MOUSE IN 3D DUE TO CONSTRAINTS.", 1,1,0)
-                draw_text_color(100, WIN_H-200, "C: New State | K: Cycle State | DEL: Delete", 0.8,0.9,1)
-                draw_text_color(100, WIN_H-230, "T: Transition (Select Source, Press T, Select Dest, Press 0/1)", 0.8,0.9,1)
-        elif SCREEN == "GAMEOVER":
-            t5 = "GAME OVER"
-            t6 = "Press R to Restart"
-            draw_text_color(WIN_W//2 - text_width_full(t5)//2, mid_y+50, t5, 1,0.2,0.2)
-            draw_text_color(WIN_W//2 - text_width_full(t6)//2, mid_y, t6, 1,1,0.5)
-        elif SCREEN == "VICTORY":
-            t7 = "CONGRATULATIONS"
-            draw_text_color(WIN_W//2 - text_width_full(t7)//2, mid_y+50, t7, 0.2,1.0,0.2)
-    elif SCREEN == "PLAYING":
-        # 3D Scene (Right Panel)
-        glViewport(LEFT_W, 0, RIGHT_W, WIN_H)
-        glEnable(GL_DEPTH_TEST)
+        glDisable(GL_DEPTH_TEST)
         glMatrixMode(GL_PROJECTION); glLoadIdentity()
-        gluPerspective(90, RIGHT_W/WIN_H, 0.1, 2000)
-        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
-        ex = camera_z * math.cos(math.radians(camera_y)) * math.cos(math.radians(camera_x))
-        ey = camera_z * math.cos(math.radians(camera_y)) * math.sin(math.radians(camera_x))
-        ez = camera_z * math.sin(math.radians(camera_y))
-        gluLookAt(ex, ey, ez, 0, 0, 0, 0, 0, 1)
-
-        draw_floor()
-        draw_axes()
-        draw_edges()
-        draw_states()
-        draw_particles()
-
-        # 2D HUD (Left Panel)
-        glViewport(0, 0, LEFT_W, WIN_H)
-        glClear(GL_DEPTH_BUFFER_BIT)
-        glMatrixMode(GL_PROJECTION); glLoadIdentity(); gluOrtho2D(0, LEFT_W, 0, WIN_H)
+        gluOrtho2D(0, WIN_W, 0, WIN_H)
         glMatrixMode(GL_MODELVIEW); glLoadIdentity()
         
-        # Pushed the HUD background far back to -0.9 so HUD text shows up!
-        draw_rect(0,0,LEFT_W,WIN_H, 0.07,0.07,0.14, -0.9) 
+        if SCREEN=="INTRO":       draw_intro_screen()
+        elif SCREEN=="MENU":
+            draw_menu_screen()
+            if show_how_to: draw_how_to_overlay()
+        elif SCREEN=="GAMEOVER":  draw_gameover_screen()
+        elif SCREEN=="VICTORY":   draw_victory_screen()
+        
+        glEnable(GL_DEPTH_TEST)
+
+    elif SCREEN=="PLAYING":
+        # ── LEFT PANEL: 2D HUD ──
+        glViewport(0, 0, LEFT_W, WIN_H)
+        glDisable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION); glLoadIdentity()
+        gluOrtho2D(0, LEFT_W, 0, WIN_H)
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+        
+        # Draw solid background to hide 3D overlap (Acts like a scissor!)
+        glColor3f(0.07, 0.07, 0.14)
+        glBegin(GL_QUADS)
+        glVertex2f(0, 0); glVertex2f(LEFT_W, 0)
+        glVertex2f(LEFT_W, WIN_H); glVertex2f(0, WIN_H)
+        glEnd()
+        
         draw_hud()
 
+        # ── RIGHT PANEL: 3D Scene ──
+        glViewport(LEFT_W, 0, RIGHT_W, WIN_H)
+        glEnable(GL_DEPTH_TEST)
+        setupCamera()
+
+        draw_stars()
+        draw_floor()
+        draw_axes()
+        draw_states()
+        draw_edges()
+        draw_particles()
+        draw_travel_particles()
+        draw_sim_marker()
+
+        if show_how_to: 
+            glViewport(0, 0, WIN_W, WIN_H) # Temporarily stretch viewport for overlay
+            draw_how_to_overlay()
+        
     glutSwapBuffers()
 
 _last_time = [0.0]
@@ -1046,3 +1049,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
