@@ -1064,7 +1064,7 @@ def keyboardListener(key, x, y):
     # Start keyboard transition mode
     if key==b't' and selected_state is not None:
         transition_mode=True; transition_src=selected_state; transition_dst=None
-
+        return
     # Undo last edge
     if key==b'x':
         if edge_list:
