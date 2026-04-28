@@ -1,6 +1,8 @@
+import os
 import sys
 import random
 import math
+import time
 from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
@@ -380,30 +382,44 @@ def update_intro_nodes(dt):
 def draw_intro_nodes():
     nodes=get_intro_nodes()
     glDisable(GL_DEPTH_TEST)
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity()
+    glMatrixMode(GL_PROJECTION); 
+    glPushMatrix(); 
+    glLoadIdentity()
     gluOrtho2D(0,WIN_W,0,WIN_H)
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity()
+    glMatrixMode(GL_MODELVIEW); 
+    glPushMatrix(); 
+    glLoadIdentity()
     for i in range(len(nodes)):
         for j in range(i+1,len(nodes)):
             ni,nj=nodes[i],nodes[j]
             dist=sqrt((ni["x"]-nj["x"])**2+(ni["y"]-nj["y"])**2)
             if dist<220:
                 alp=(1-dist/220)*0.35
-                glLineWidth(1); glColor3f(0.2*alp,0.6*alp,alp)
-                glBegin(GL_LINES); glVertex2f(ni["x"],ni["y"]); glVertex2f(nj["x"],nj["y"]); glEnd()
+                glLineWidth(5); 
+                glColor3f(0.4*alp,0.8*alp,alp)
+                glBegin(GL_LINES); 
+                glVertex2f(ni["x"],ni["y"]); 
+                glVertex2f(nj["x"],nj["y"]); 
+                glEnd()
     for n in nodes:
         pulse=(sin(time_val*2+n["phase"])+1)*0.5
         r=n["r"]+4*pulse; cr,cg,cb=n["col"]
         glColor3f(cr*0.25,cg*0.25,cb*0.25)
-        glBegin(GL_TRIANGLE_FAN); glVertex2f(n["x"],n["y"])
-        for k in range(25): a=2*pi*k/24; glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
+        glBegin(GL_TRIANGLE_FAN); 
+        glVertex2f(n["x"],n["y"])
+        for k in range(25): a=2*pi*k/24; 
+        glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
         glEnd()
         glColor3f(cr,cg,cb); glLineWidth(2)
         glBegin(GL_LINE_LOOP)
-        for k in range(24): a=2*pi*k/24; glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
+        for k in range(24): a=2*pi*k/24; 
+        glVertex2f(n["x"]+r*cos(a),n["y"]+r*sin(a))
         glEnd()
-    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix()
-    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST)
+    glPopMatrix(); 
+    glMatrixMode(GL_PROJECTION); 
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW); 
+    glEnable(GL_DEPTH_TEST)
 
 def draw_intro_screen():
     draw_rect_2d(0,0,WIN_W,WIN_H,(0.02,0.02,0.06))
@@ -749,7 +765,7 @@ def mouseListener(button, state_btn, x, y):
                     if MENU_OPTIONS[i]=="START GAME": SCREEN="PLAYING"
                     elif MENU_OPTIONS[i]=="HOW TO PLAY": show_how_to=True
                     elif MENU_OPTIONS[i]=="QUIT": 
-                        sys.exit(0)
+                        os._exit(0)  # <--- CHANGED THIS LINE
                     return
         return
 
@@ -812,7 +828,8 @@ def keyboardListener(key, x, y):
         if key in (b'\r',b'\n'):
             if menu_hover==0: SCREEN="PLAYING"
             elif menu_hover==1: show_how_to=True
-            elif menu_hover==2: sys.exit(0)
+            elif menu_hover==2:
+                os._exit(0)
         return
     if SCREEN=="GAMEOVER" or SCREEN=="VICTORY":
         if key==b'r': SCREEN="PLAYING"; reset_all(); current_question=0; total_score=0
@@ -1033,37 +1050,41 @@ def showScreen():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
     if SCREEN in ("INTRO","MENU","GAMEOVER","VICTORY"):
-        glLoadIdentity()
-        glViewport(0,0,WIN_W,WIN_H)
-        glDisable(GL_SCISSOR_TEST)
+        glViewport(0, 0, WIN_W, WIN_H)
         glDisable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION); glLoadIdentity()
+        gluOrtho2D(0, WIN_W, 0, WIN_H)
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+        
         if SCREEN=="INTRO":       draw_intro_screen()
         elif SCREEN=="MENU":
             draw_menu_screen()
             if show_how_to: draw_how_to_overlay()
         elif SCREEN=="GAMEOVER":  draw_gameover_screen()
         elif SCREEN=="VICTORY":   draw_victory_screen()
+        
         glEnable(GL_DEPTH_TEST)
 
     elif SCREEN=="PLAYING":
-        glEnable(GL_SCISSOR_TEST)
-        glScissor(0, 0, LEFT_W, WIN_H)
+        # ── LEFT PANEL: 2D HUD ──
         glViewport(0, 0, LEFT_W, WIN_H)
         glDisable(GL_DEPTH_TEST)
-
         glMatrixMode(GL_PROJECTION); glLoadIdentity()
         gluOrtho2D(0, LEFT_W, 0, WIN_H)
         glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+        
+        # Draw solid background to hide 3D overlap (Acts like a scissor!)
         glColor3f(0.07, 0.07, 0.14)
         glBegin(GL_QUADS)
-        glVertex2f(0, 0); glVertex2f(LEFT_W, 0); glVertex2f(LEFT_W, WIN_H); glVertex2f(0, WIN_H)
+        glVertex2f(0, 0); glVertex2f(LEFT_W, 0)
+        glVertex2f(LEFT_W, WIN_H); glVertex2f(0, WIN_H)
         glEnd()
+        
         draw_hud()
 
-        glScissor(LEFT_W, 0, RIGHT_W, WIN_H)
+        # ── RIGHT PANEL: 3D Scene ──
         glViewport(LEFT_W, 0, RIGHT_W, WIN_H)
         glEnable(GL_DEPTH_TEST)
-        glLoadIdentity()
         setupCamera()
 
         draw_stars()
@@ -1075,8 +1096,9 @@ def showScreen():
         draw_travel_particles()
         draw_sim_marker()
 
-        if show_how_to: draw_how_to_overlay()
-        glDisable(GL_SCISSOR_TEST)
+        if show_how_to: 
+            glViewport(0, 0, WIN_W, WIN_H) # Temporarily stretch viewport for overlay
+            draw_how_to_overlay()
         
     glutSwapBuffers()
 
@@ -1084,14 +1106,12 @@ _last_time = [0.0]
 
 def idle():
     global frame_count, time_val, intro_timer
-    global WIN_W, WIN_H, RIGHT_W
-    WIN_W = glutGet(GLUT_WINDOW_WIDTH)
-    WIN_H = glutGet(GLUT_WINDOW_HEIGHT)
-    RIGHT_W = max(100, WIN_W - LEFT_W)
-    now=glutGet(GLUT_ELAPSED_TIME)/1000.0
-    dt=min(now-_last_time[0],0.05)
-    _last_time[0]=now
-    time_val+=dt; frame_count+=1
+    now = time.time()
+    dt = min(now - _last_time[0], 0.05)
+    _last_time[0] = now
+    
+    time_val += dt
+    frame_count += 1
 
     if SCREEN in ("INTRO","MENU","GAMEOVER","VICTORY"):
         if SCREEN=="INTRO": intro_timer+=dt
@@ -1099,11 +1119,8 @@ def idle():
     elif SCREEN=="PLAYING":
         update_particles(dt)
         update_travel_particles(dt)
-        
-        # RESTORED: Fades the glowing edges after simulation!
         for fe in flash_edges:
             fe[2] = min(1.0, fe[2] + dt * 0.6)
-            
         tick_simulation()
 
     glutPostRedisplay()
